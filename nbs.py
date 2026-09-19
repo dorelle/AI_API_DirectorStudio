@@ -2351,10 +2351,23 @@ def ensure_projects_columns(conn):
     desired = {
         # Task 14: the film's constant, stored as written (markdown or plain text)
         "playbook": "TEXT NOT NULL DEFAULT ''",
+        # Task 17: the film's short code, the first segment of every scene and shot ID
+        "film_code": "TEXT NOT NULL DEFAULT ''",
     }
     for name, ddl in desired.items():
         if name not in cols:
             conn.execute(f"ALTER TABLE projects ADD COLUMN {name} {ddl}")
+
+
+def ensure_scenes_columns(conn):
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(scenes)").fetchall()}
+    desired = {
+        # Task 17: the scene number behind {FILM}-S{NN}; NULL on scenes from the old convention
+        "number": "INTEGER",
+    }
+    for name, ddl in desired.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE scenes ADD COLUMN {name} {ddl}")
 
 
 def ensure_shots_columns(conn):
@@ -2372,6 +2385,10 @@ def ensure_shots_columns(conn):
         "scene_id":         "INTEGER",
         # Task 15: the frame prompt; `prompt` stays the motion prompt the render sends
         "scene_prompt":     "TEXT NOT NULL DEFAULT ''",
+        # Task 17: the parts of the assembled ID. slug holds the assembled ID and never changes
+        "setup":            "INTEGER",
+        "exposure_class":   "TEXT NOT NULL DEFAULT ''",
+        "name_slug":        "TEXT NOT NULL DEFAULT ''",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2589,7 +2606,16 @@ def init_studio_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS setup_counters (
+            scene_id INTEGER PRIMARY KEY,
+            next_number INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
     ensure_projects_columns(conn)
+    ensure_scenes_columns(conn)
     ensure_shots_columns(conn)
     ensure_takes_columns(conn)
     ensure_task_templates_columns(conn)
@@ -2675,6 +2701,7 @@ def project_row_to_dict(row) -> dict:
     item["settings"] = settings if isinstance(settings, dict) else {}
     item["archived"] = bool(item.get("archived"))
     item["playbook"] = str(item.get("playbook") or "")
+    item["film_code"] = str(item.get("film_code") or "")
     item["assetClient"] = normalize_asset_scope_text(item.get("client", "")) or ASSET_UNCATEGORIZED_VALUE
     item["assetProject"] = normalize_asset_scope_text(item.get("name", "")) or ASSET_UNCATEGORIZED_VALUE
     return item
@@ -2703,6 +2730,49 @@ def get_project(project_id) -> dict | None:
     return project_row_to_dict(row) if row else None
 
 
+# ---- Task 17: the ID spine. {FILM}-S{scene}-{setup}-{CLASS}-{slug}, assembled once, never renamed. ----
+EXPOSURE_CLASSES = ("FLASH", "POP", "DETAIL")
+DEFAULT_EXPOSURE_CLASS = "POP"
+_FILM_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,23}$")
+NO_FILM_CODE_MESSAGE = "This film project has no film code. Set one in the project settings (e.g. NEX01) before creating scenes or shots."
+
+
+def normalize_film_code(value) -> str:
+    """Short code, upper-cased as the convention writes it: letters, digits, hyphens. No spaces, nothing a filename rejects."""
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if not _FILM_CODE_RE.match(text):
+        raise ValueError("Film code: letters, digits and hyphens only, no spaces (e.g. NEX01, RDOA-E01).")
+    return text
+
+
+def normalize_exposure_class(value, *, required: bool = False) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        if required:
+            return DEFAULT_EXPOSURE_CLASS
+        return ""
+    if text not in EXPOSURE_CLASSES:
+        raise ValueError("Exposure class must be one of " + ", ".join(EXPOSURE_CLASSES))
+    return text
+
+
+def normalize_name_slug(value) -> str:
+    """Two or three human-readable words, hyphenated, no spaces; kept in the case typed."""
+    words = [re.sub(r"[^A-Za-z0-9]+", "", w) for w in re.split(r"[\s_\-]+", str(value or "").strip())]
+    words = [w for w in words if w]
+    if not words:
+        return ""
+    if len(words) > 3:
+        raise ValueError("Shot name: two or three words at most (it becomes part of the ID).")
+    return "-".join(words)
+
+
+def is_new_convention_slug(slug: str) -> bool:
+    return bool(re.match(r"^[A-Z0-9][A-Z0-9-]*-S\d{2}(-\d{2}-(FLASH|POP|DETAIL)-[A-Za-z0-9-]+)?$", str(slug or "")))
+
+
 def create_project(body: dict) -> dict:
     name = sanitize_asset_meta_text(body.get("name", ""))
     if not name or name.lower() == ASSET_UNCATEGORIZED_VALUE:
@@ -2712,11 +2782,14 @@ def create_project(body: dict) -> dict:
     if not project_type:
         raise ValueError("Project type must be 'film' or 'campaign'")
     settings = normalize_project_settings(project_type, body.get("settings"))
+    film_code = normalize_film_code(body.get("film_code")) if project_type == "film" else ""
+    if project_type == "film" and not film_code:
+        raise ValueError("Film projects need a film code (e.g. NEX01). It is the first segment of every scene and shot ID.")
     init_studio_db()
     conn = get_db_connection()
     cursor = conn.execute(
-        "INSERT INTO projects (name, client, type, settings, created_at, archived, playbook) VALUES (?, ?, ?, ?, ?, 0, ?)",
-        (name, client, project_type, json.dumps(settings, ensure_ascii=False), utc_now_iso(), str(body.get("playbook") or "")),
+        "INSERT INTO projects (name, client, type, settings, created_at, archived, playbook, film_code) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+        (name, client, project_type, json.dumps(settings, ensure_ascii=False), utc_now_iso(), str(body.get("playbook") or ""), film_code),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -2751,6 +2824,17 @@ def update_project(project_id, body: dict) -> dict:
         updates["archived"] = 1 if body.get("archived") else 0
     if "playbook" in body:
         updates["playbook"] = str(body.get("playbook") or "")   # as written: no strip, no parse
+    if "film_code" in body:
+        film_code = normalize_film_code(body.get("film_code"))
+        if film_code != (existing.get("film_code") or ""):
+            conn = get_db_connection()
+            in_use = conn.execute("SELECT COUNT(*) AS n FROM scenes WHERE project_id = ? AND number IS NOT NULL", (existing["id"],)).fetchone()["n"]
+            conn.close()
+            if in_use:
+                raise ValueError("The film code is fixed once scenes carry it: IDs are never renamed.")
+            if project_type == "film" and not film_code:
+                raise ValueError("Film projects need a film code (e.g. NEX01).")
+            updates["film_code"] = film_code
     if updates:
         conn = get_db_connection()
         assignments = ", ".join(f"{column} = ?" for column in updates)
@@ -2902,6 +2986,22 @@ def next_shot_slug(conn, project: dict) -> str:
     return f"{stem}_SH{number:03d}"
 
 
+def next_setup_number(conn, scene_id: int) -> int:
+    """Task 17: per-scene setup counter. Only increments; a deleted shot's number is never reused."""
+    row = conn.execute("SELECT next_number FROM setup_counters WHERE scene_id = ?", (int(scene_id),)).fetchone()
+    number = int(row["next_number"]) if row else 1
+    conn.execute(
+        "INSERT INTO setup_counters (scene_id, next_number) VALUES (?, ?) "
+        "ON CONFLICT(scene_id) DO UPDATE SET next_number = excluded.next_number",
+        (int(scene_id), number + 1),
+    )
+    return number
+
+
+def assemble_shot_id(film_code: str, scene_number: int, setup: int, exposure_class: str, name_slug: str) -> str:
+    return f"{film_code}-S{int(scene_number):02d}-{int(setup):02d}-{exposure_class}-{name_slug}"
+
+
 def _normalize_shot_movement(raw) -> str:
     if isinstance(raw, str):
         values = [part for part in raw.split(",")]
@@ -3033,6 +3133,11 @@ def _shot_updates_from_body(body: dict) -> dict:
             if not scene:
                 raise ValueError("Scene not found")
             updates["scene_id"] = scene["id"]
+    # Task 17: editable labels; the stored slug is never reassembled from them
+    if "exposure_class" in body:
+        updates["exposure_class"] = normalize_exposure_class(body.get("exposure_class"))
+    if "name_slug" in body:
+        updates["name_slug"] = normalize_name_slug(body.get("name_slug"))
     return updates
 
 
@@ -3050,6 +3155,20 @@ def create_shot(body: dict) -> dict:
         raise ValueError("Shots belong to film projects")
     updates = _shot_updates_from_body(body)
     _validate_cast_refs(updates.get("scene_id"), updates)
+    # Task 17: the ID needs the film code and the scene number, so both are required at creation
+    if not project.get("film_code"):
+        raise ValueError(NO_FILM_CODE_MESSAGE)
+    scene = get_scene(updates.get("scene_id")) if updates.get("scene_id") else None
+    if not scene:
+        raise ValueError("A shot needs a scene: its ID carries the scene number. Pick a scene first.")
+    if scene.get("number") is None:
+        raise ValueError(f"{scene['slug']} is on the old naming and has no scene number. Create a new scene for new shots.")
+    exposure_class = normalize_exposure_class(body.get("exposure_class"), required=True)
+    name_slug = normalize_name_slug(body.get("name_slug", body.get("name")))
+    if not name_slug:
+        raise ValueError("Give the shot a short name (two or three words): it is part of the ID.")
+    updates["exposure_class"] = exposure_class
+    updates["name_slug"] = name_slug
     init_studio_db()
     conn = get_db_connection()
     after_id = body.get("after_id")
@@ -3076,7 +3195,8 @@ def create_shot(body: dict) -> dict:
     else:
         last = conn.execute("SELECT MAX(sort_order) AS m FROM shots WHERE project_id = ?", (project["id"],)).fetchone()
         sort_order = (int(last["m"]) if last and last["m"] is not None else 0) + SHOT_SORT_STEP
-    slug = next_shot_slug(conn, project)
+    updates["setup"] = next_setup_number(conn, scene["id"])
+    slug = assemble_shot_id(project["film_code"], scene["number"], updates["setup"], exposure_class, name_slug)
     columns = ["project_id", "slug", "sort_order", "created_at"] + list(updates.keys())
     values = [project["id"], slug, sort_order, utc_now_iso()] + list(updates.values())
     cursor = conn.execute(
@@ -3214,6 +3334,18 @@ def next_scene_slug(conn, project: dict) -> str:
     return f"{stem}_SC{number:03d}"
 
 
+def next_scene_id(conn, project: dict) -> tuple[str, int]:
+    """Task 17: ({FILM}-S{NN}, NN) from the same per-project counter (it only increments; nothing is reused)."""
+    row = conn.execute("SELECT next_number FROM scene_slug_counters WHERE project_id = ?", (project["id"],)).fetchone()
+    number = int(row["next_number"]) if row else 1
+    conn.execute(
+        "INSERT INTO scene_slug_counters (project_id, next_number) VALUES (?, ?) "
+        "ON CONFLICT(project_id) DO UPDATE SET next_number = excluded.next_number",
+        (project["id"], number + 1),
+    )
+    return f"{project['film_code']}-S{number:02d}", number
+
+
 def _scene_updates_from_body(body: dict) -> dict:
     updates = {}
     for key in SCENE_TEXT_FIELDS:
@@ -3248,6 +3380,8 @@ def create_scene(body: dict) -> dict:
         raise LookupError("Project not found")
     if project.get("type") != "film":
         raise ValueError("Scenes belong to film projects")
+    if not project.get("film_code"):
+        raise ValueError(NO_FILM_CODE_MESSAGE)
     updates = _scene_updates_from_body(body)
     init_studio_db()
     conn = get_db_connection()
@@ -3272,7 +3406,7 @@ def create_scene(body: dict) -> dict:
     else:
         last = conn.execute("SELECT MAX(sort_order) AS m FROM scenes WHERE project_id = ?", (project["id"],)).fetchone()
         sort_order = (int(last["m"]) if last and last["m"] is not None else 0) + SHOT_SORT_STEP
-    slug = next_scene_slug(conn, project)
+    slug, updates["number"] = next_scene_id(conn, project)
     if not updates.get("name"):
         updates["name"] = slug
     columns = ["project_id", "slug", "sort_order", "created_at"] + list(updates.keys())

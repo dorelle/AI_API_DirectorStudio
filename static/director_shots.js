@@ -13,7 +13,13 @@
   const roleOf = (entry) => (entry && typeof entry === "object" && REFERENCE_ROLES.includes(entry.role)) ? entry.role : "unassigned";
   const asEntry = (entry) => ({ ref: refOf(entry), role: roleOf(entry) });
   const STATUS_LABELS = { empty: "Empty", queued: "Queued", rendering: "Rendering", done: "Done", rejected: "Rejected", failed: "Failed" };
+  const EXPOSURE_CLASSES = ["FLASH", "POP", "DETAIL"];
   const FIELD_GROUPS = [
+    // Task 17: the parts of the ID. Editing them here relabels the shot; the stored ID never changes.
+    { key: "identity", label: "ID", hint: "Film code, scene number and setup are fixed at creation. Changing the class or name here does not change the ID.", fields: [
+      { key: "exposure_class", label: "Exposure class", type: "select", options: EXPOSURE_CLASSES },
+      { key: "name_slug", label: "Name (two or three words)" },
+    ] },
     // Working order (Task 09): numbered steps 1-7. Timing and Notes carry no number.
     { key: "timing", label: "Timing", hint: "Duration and where it lands in the beat map.", fields: [
       { key: "duration_seconds", label: "Duration (seconds)", type: "number" },
@@ -321,8 +327,41 @@
     if (card && typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
   }
 
-  async function createShot(extra = {}) {
+  // Task 17: a shot's ID needs its scene, an exposure class and a short name, so creation asks for them first.
+  function createShot(extra = {}) {
     if (!isFilm()) return;
+    if (!project.film_code) {
+      setStatusLine("This film project has no film code. Set one in the project settings (Edit project) before adding shots.", "error");
+      return;
+    }
+    let sceneId = extra.scene_id || "";
+    if (!sceneId && extra.after_id) sceneId = (findShot(extra.after_id) || {}).scene_id || "";
+    if (!sceneId && selectedSceneId) sceneId = selectedSceneId;
+    if (!sceneId) {
+      setStatusLine("Pick a scene first: a shot's ID carries the scene number.", "error");
+      return;
+    }
+    const scene = findScene(sceneId);
+    const line = $("dsShotStatusLine") || $("dsSceneStatusLine");   // whichever rail is open
+    if (!line) { setStatusLine("Open the Shots rail to add a shot.", "error"); return; }
+    line.className = "ds-shot-status-line";
+    line.innerHTML = `<form class="ds-new-shot" id="dsNewShotForm">
+        <span class="ds-shot-slug">${esc(scene ? scene.slug : "")}-${"??"}-</span>
+        <select name="exposure_class" class="ds-field-input" title="Exposure class">${EXPOSURE_CLASSES.map((c) => `<option value="${c}" ${c === "POP" ? "selected" : ""}>${c}</option>`).join("")}</select>
+        <input name="name_slug" class="ds-field-input" type="text" placeholder="two or three words" autocomplete="off" required>
+        <button type="submit" class="history-filter-toggle">Create</button>
+        <button type="button" class="ds-shot-mini" data-cancel>Cancel</button>
+      </form>`;
+    const form = $("dsNewShotForm");
+    form.querySelector("input").focus();
+    form.querySelector("[data-cancel]").addEventListener("click", () => { line.innerHTML = ""; });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitNewShot({ ...extra, scene_id: sceneId, exposure_class: form.exposure_class.value, name_slug: form.name_slug.value });
+    });
+  }
+
+  async function submitNewShot(extra = {}) {
     try {
       const payload = await api("/api/shots", { method: "POST", body: { project_id: project.id, ...extra } });
       await loadShots();
@@ -737,7 +776,8 @@
       const unknown = current && !(videoModels && videoModels[current]) ? `<option value="${esc(current)}" selected>${esc(current)} (unknown)</option>` : "";
       control = `<select class="ds-field-input" data-field="${field.key}"><option value="" ${current ? "" : "selected"}>Generator's current video model</option>${unknown}${options}</select>`;
     } else if (field.type === "select") {
-      control = `<select class="ds-field-input" data-field="${field.key}">${field.options.map((option) => `<option value="${esc(option)}" ${option === value ? "selected" : ""}>${esc(STATUS_LABELS[option] || option)}</option>`).join("")}</select>`;
+      const blank = field.options.includes(value) ? "" : `<option value="" selected>${field.key === "exposure_class" ? "(old naming \u2014 no class)" : ""}</option>`;
+      control = `<select class="ds-field-input" data-field="${field.key}">${blank}${field.options.map((option) => `<option value="${esc(option)}" ${option === value ? "selected" : ""}>${esc(STATUS_LABELS[option] || option)}</option>`).join("")}</select>`;
     } else {
       const listId = field.list ? `dsList_${field.key}` : "";
       control = `<input class="ds-field-input" data-field="${field.key}" type="${field.type === "number" ? "number" : "text"}" ${field.type === "number" ? 'step="0.1" min="0"' : ""} value="${esc(value)}" ${listId ? `list="${listId}"` : ""} autocomplete="off">` +

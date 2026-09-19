@@ -516,6 +516,8 @@
     });
     const playbook = document.getElementById("projectModalPlaybook");
     if (playbook) playbook.value = record ? String(record.playbook || "") : "";
+    const filmCode = document.getElementById("projectModalFilmCode");
+    if (filmCode) filmCode.value = record ? String(record.film_code || "") : "";
     const playbookInfo = document.getElementById("projectModalPlaybookInfo");
     if (playbookInfo) playbookInfo.textContent = record && record.playbook ? `${String(record.playbook).length} characters` : "";
     const title = document.getElementById("projectModalTitle");
@@ -549,9 +551,14 @@
         body.settings[key] = document.getElementById(id)?.value || "";
       });
       body.playbook = document.getElementById("projectModalPlaybook")?.value ?? "";   // as written
+      body.film_code = (document.getElementById("projectModalFilmCode")?.value || "").trim().toUpperCase();
     }
     if (!String(body.name).trim()) {
       setProjectModalError("Project name is required.");
+      return;
+    }
+    if (type === "film" && !body.film_code) {
+      setProjectModalError("A film project needs a film code (e.g. NEX01). It is the first segment of every scene and shot ID.");
       return;
     }
     if (saveBtn) saveBtn.disabled = true;

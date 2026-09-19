@@ -10108,3 +10108,8 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 
 /* ---- key-aware model selectors: unconfigured providers dimmed, never removed ---- */
 optgroup.opt-needs-key, option.opt-needs-key { color: var(--text-dim); font-style: italic; }
+
+/* ---- Task 17: new-shot form (class + name before the ID is assembled) ---- */
+.ds-new-shot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 0; }
+.ds-new-shot .ds-field-input { width: auto; min-width: 0; }
+.ds-new-shot input.ds-field-input { flex: 1 1 140px; }
