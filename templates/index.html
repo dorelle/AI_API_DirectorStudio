@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919a"></script>
-  <script defer src="/static/director_shots.js?v=20260919i"></script>
+  <script defer src="/static/director_shots.js?v=20260919j"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -14626,6 +14626,7 @@ async function openElements(target = "refs") {
       : target === "edit-global-refs" ? "edit-global-refs"
       : target === "edit-selection-refs" ? "edit-selection-refs"
       : target === "shot-elements" ? "shot-elements"
+      : target === "scene-cast" ? "scene-cast"
       : "refs";
   if (elementsTarget === "refs") {
     const maxRef = getMaxRefImages();
@@ -14817,7 +14818,7 @@ function renderElementsGrid(items) {
 }
 
 function toggleElementCard(card, asset) {
-  const remaining = (elementsTarget === "video" || elementsTarget === "video-end")
+  const remaining = (elementsTarget === "video" || elementsTarget === "video-end" || elementsTarget === "scene-cast")
     ? 1
     : elementsTarget === "shot-elements"
     ? 99
@@ -14840,7 +14841,7 @@ function toggleElementCard(card, asset) {
     return;
   }
   if (!elSelectedIds.has(asset.id) && elSelectedIds.size >= safeRemaining) {
-    if (elementsTarget === "video" || elementsTarget === "video-end") {
+    if (elementsTarget === "video" || elementsTarget === "video-end" || elementsTarget === "scene-cast") {
       elSelectedIds = new Set();
       elSelectedMap = {};
       document.querySelectorAll(".el-card.selected").forEach(el => el.classList.remove("selected"));
@@ -14909,7 +14910,9 @@ function updateElementsSelCount() {
 
 function updateElementsLimitNote() {
   let note = "";
-  if (elementsTarget === "shot-elements") {
+  if (elementsTarget === "scene-cast") {
+    note = "Pick one talent element. The scene will own how they look in it.";
+  } else if (elementsTarget === "shot-elements") {
     note = "Select the talent in this shot. Order can be changed in the shot editor.";
   } else if (elementsTarget === "video-end") {
     note = videoEndImage && videoEndImage.data
@@ -14946,6 +14949,12 @@ async function confirmElements() {
   if (elementsTarget === "shot-elements") {
     if (window.directorShots && typeof window.directorShots.onElementsPicked === "function") {
       window.directorShots.onElementsPicked(assets);
+    }
+    return;
+  }
+  if (elementsTarget === "scene-cast") {
+    if (assets[0] && window.directorShots && typeof window.directorShots.onCastElementPicked === "function") {
+      window.directorShots.onCastElementPicked(assets[0]);
     }
     return;
   }

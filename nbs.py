@@ -2410,6 +2410,23 @@ def init_studio_db():
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS scene_cast (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            element_id TEXT NOT NULL,
+            character_name TEXT NOT NULL DEFAULT '',
+            look_name TEXT NOT NULL DEFAULT '',
+            handle TEXT NOT NULL DEFAULT '',
+            images TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            locked_fields TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS scene_slug_counters (
             project_id INTEGER PRIMARY KEY,
             next_number INTEGER NOT NULL DEFAULT 1
@@ -2879,6 +2896,7 @@ def create_shot(body: dict) -> dict:
     if project.get("type") != "film":
         raise ValueError("Shots belong to film projects")
     updates = _shot_updates_from_body(body)
+    _validate_cast_refs(updates.get("scene_id"), updates)
     init_studio_db()
     conn = get_db_connection()
     after_id = body.get("after_id")
@@ -2924,6 +2942,7 @@ def update_shot(shot_id, body: dict) -> dict:
         raise LookupError("Shot not found")
     updates = _shot_updates_from_body(body)
     _enforce_single_edit_target(existing, updates)
+    _validate_cast_refs(updates.get("scene_id", existing.get("scene_id")) if "scene_id" in updates else existing.get("scene_id"), updates)
     # slug, sort_order, project_id are never writable here
     if updates:
         conn = get_db_connection()
@@ -3108,10 +3127,231 @@ def delete_scene(scene_id) -> dict | None:
     conn = get_db_connection()
     detached = conn.execute("SELECT COUNT(*) AS n FROM shots WHERE scene_id = ?", (existing["id"],)).fetchone()["n"]
     conn.execute("UPDATE shots SET scene_id = NULL WHERE scene_id = ?", (existing["id"],))
+    removed_cast = conn.execute("SELECT COUNT(*) AS n FROM scene_cast WHERE scene_id = ?", (existing["id"],)).fetchone()["n"]
+    conn.execute("DELETE FROM scene_cast WHERE scene_id = ?", (existing["id"],))
     conn.execute("DELETE FROM scenes WHERE id = ?", (existing["id"],))
     conn.commit()
     conn.close()
-    return {"deleted": existing["slug"], "detached_shots": int(detached)}
+    return {"deleted": existing["slug"], "detached_shots": int(detached), "removed_cast": int(removed_cast)}
+
+
+# ---------------------------------------------------------------------------
+# Scene cast (Director Studio, Task 13). One talent element, dressed for one scene.
+# A shot attaches a cast member as an elements entry whose ref is "cast:<id>".
+# ---------------------------------------------------------------------------
+CAST_TEXT_FIELDS = ("character_name", "look_name", "handle", "note")
+CAST_REF_PREFIX = "cast:"
+
+
+def cast_row_to_dict(row) -> dict:
+    item = dict(row)
+    for key in ("images", "locked_fields"):
+        try:
+            value = json.loads(item.get(key) or "[]")
+        except json.JSONDecodeError:
+            value = []
+        item[key] = [str(v).strip() for v in value if str(v or "").strip()] if isinstance(value, list) else []
+    return item
+
+
+def attach_cast_elements(cast: list[dict]) -> list[dict]:
+    """Adds `element` = {id, name, img_url} for the talent element, or None when it is gone."""
+    for member in cast:
+        url = resolve_element_primary_image_url(member.get("element_id"))
+        name = ""
+        if url:
+            for folder_name in ELEMENTS_CATEGORIES:
+                folder_path = os.path.join(ELEMENTS_DIR, folder_name)
+                if not os.path.isdir(folder_path):
+                    continue
+                for json_path in list_talent_jsons(folder_path):
+                    talent = load_talent_json(json_path)
+                    if talent and str(talent.get("id", "")) == str(member.get("element_id")):
+                        name = str(talent.get("name") or "")
+                        break
+                if name:
+                    break
+        member["element"] = {"id": member.get("element_id"), "name": name or member.get("element_id"), "img_url": url} if url else None
+    return cast
+
+
+def fetch_cast(scene_id) -> list[dict]:
+    try:
+        scene_id = int(scene_id)
+    except (TypeError, ValueError):
+        return []
+    init_studio_db()
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM scene_cast WHERE scene_id = ? ORDER BY sort_order ASC, id ASC", (scene_id,)).fetchall()
+    conn.close()
+    return attach_cast_elements([cast_row_to_dict(row) for row in rows])
+
+
+def get_cast_member(cast_id) -> dict | None:
+    try:
+        cast_id = int(cast_id)
+    except (TypeError, ValueError):
+        return None
+    init_studio_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM scene_cast WHERE id = ? LIMIT 1", (cast_id,)).fetchone()
+    conn.close()
+    return attach_cast_elements([cast_row_to_dict(row)])[0] if row else None
+
+
+def _project_cast_handles(conn, project_id: int, exclude_id=None) -> set[str]:
+    rows = conn.execute(
+        "SELECT c.id, c.handle FROM scene_cast c JOIN scenes s ON s.id = c.scene_id WHERE s.project_id = ?", (project_id,)
+    ).fetchall()
+    return {str(row["handle"]).lower() for row in rows if row["handle"] and row["id"] != exclude_id}
+
+
+def make_cast_handle(conn, project_id: int, character_name: str, look_name: str, requested: str = "", exclude_id=None) -> tuple[str, str]:
+    """@Character_Look through the existing sanitizer; unique within the project, suffixed on collision.
+    Returns (handle, note) where note says when a suffix was needed."""
+    if requested:
+        base = sanitize_asset_filename_stem(requested.lstrip("@"), fallback="")
+    else:
+        parts = [sanitize_asset_filename_stem(character_name, fallback=""), sanitize_asset_filename_stem(look_name, fallback="")]
+        base = "_".join(part for part in parts if part)
+    base = base or "cast"
+    taken = _project_cast_handles(conn, project_id, exclude_id)
+    handle = f"@{base}"
+    counter = 2
+    while handle.lower() in taken:
+        handle = f"@{base}_{counter}"
+        counter += 1
+    note = f"Handle {'@' + base} was taken in this project; using {handle}." if handle != f"@{base}" else ""
+    return handle, note
+
+
+def _cast_updates_from_body(body: dict) -> dict:
+    updates = {}
+    for key in CAST_TEXT_FIELDS:
+        if key in body and key != "handle":
+            updates[key] = str(body.get(key) or "").strip()
+    if "images" in body:
+        updates["images"] = _normalize_shot_id_list_plain(body.get("images"))
+    if "locked_fields" in body:
+        values = body.get("locked_fields") if isinstance(body.get("locked_fields"), list) else []
+        cleaned = []
+        for value in values:
+            text = str(value or "").strip()
+            if text in CAST_TEXT_FIELDS + ("images", "element_id") and text not in cleaned:
+                cleaned.append(text)
+        updates["locked_fields"] = json.dumps(cleaned)
+    return updates
+
+
+def _normalize_shot_id_list_plain(raw) -> str:
+    values = raw if isinstance(raw, list) else []
+    cleaned = []
+    for value in values:
+        text = str((value.get("ref") if isinstance(value, dict) else value) or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def create_cast_member(scene_id, body: dict) -> tuple[dict, str]:
+    scene = get_scene(scene_id)
+    if not scene:
+        raise LookupError("Scene not found")
+    element_id = str(body.get("element_id") or "").strip()
+    if not element_id:
+        raise ValueError("A talent element is required")
+    if not resolve_element_primary_image_url(element_id):
+        raise ValueError(f"Element '{element_id}' was not found in the Elements library")
+    updates = _cast_updates_from_body(body)
+    updates.setdefault("character_name", "")
+    updates.setdefault("look_name", "")
+    init_studio_db()
+    conn = get_db_connection()
+    handle, note = make_cast_handle(conn, scene["project_id"], updates["character_name"], updates["look_name"], str(body.get("handle") or ""))
+    last = conn.execute("SELECT MAX(sort_order) AS m FROM scene_cast WHERE scene_id = ?", (scene["id"],)).fetchone()
+    sort_order = (int(last["m"]) if last and last["m"] is not None else 0) + SHOT_SORT_STEP
+    columns = ["scene_id", "element_id", "handle", "sort_order", "created_at"] + list(updates.keys())
+    values = [scene["id"], element_id, handle, sort_order, utc_now_iso()] + list(updates.values())
+    cursor = conn.execute(f"INSERT INTO scene_cast ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", values)
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return get_cast_member(new_id), note
+
+
+def update_cast_member(cast_id, body: dict) -> tuple[dict, str]:
+    existing = get_cast_member(cast_id)
+    if not existing:
+        raise LookupError("Cast member not found")
+    updates = _cast_updates_from_body(body)
+    note = ""
+    if "element_id" in body:
+        element_id = str(body.get("element_id") or "").strip()
+        if not element_id or not resolve_element_primary_image_url(element_id):
+            raise ValueError("Element was not found in the Elements library")
+        updates["element_id"] = element_id
+    if "handle" in body:
+        scene = get_scene(existing["scene_id"])
+        conn = get_db_connection()
+        handle, note = make_cast_handle(conn, scene["project_id"], existing["character_name"], existing["look_name"], str(body.get("handle") or ""), exclude_id=existing["id"])
+        conn.close()
+        updates["handle"] = handle
+    if updates:
+        conn = get_db_connection()
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(f"UPDATE scene_cast SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
+        conn.commit()
+        conn.close()
+    return get_cast_member(existing["id"]), note
+
+
+def delete_cast_member(cast_id) -> bool:
+    existing = get_cast_member(cast_id)
+    if not existing:
+        return False
+    conn = get_db_connection()
+    conn.execute("DELETE FROM scene_cast WHERE id = ?", (existing["id"],))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def reorder_cast(scene_id, ordered_ids: list) -> list[dict]:
+    scene = get_scene(scene_id)
+    if not scene:
+        raise LookupError("Scene not found")
+    try:
+        ordered_ids = [int(value) for value in ordered_ids]
+    except (TypeError, ValueError):
+        raise ValueError("ids must be integers")
+    current = [member["id"] for member in fetch_cast(scene["id"])]
+    if sorted(ordered_ids) != sorted(current):
+        raise ValueError("ids must contain every cast member of the scene exactly once")
+    conn = get_db_connection()
+    for index, cast_id in enumerate(ordered_ids):
+        conn.execute("UPDATE scene_cast SET sort_order = ? WHERE id = ?", ((index + 1) * SHOT_SORT_STEP, cast_id))
+    conn.commit()
+    conn.close()
+    return fetch_cast(scene["id"])
+
+
+def _validate_cast_refs(shot_scene_id, updates: dict) -> None:
+    """A shot may only attach cast members from its own scene."""
+    if "elements" not in updates:
+        return
+    try:
+        entries = json.loads(updates["elements"])
+    except json.JSONDecodeError:
+        return
+    for entry in entries:
+        ref = str(entry.get("ref") or "")
+        if not ref.startswith(CAST_REF_PREFIX):
+            continue
+        member = get_cast_member(ref[len(CAST_REF_PREFIX):])
+        if not member:
+            raise ValueError(f"Cast member '{ref}' was not found")
+        if not shot_scene_id or int(member["scene_id"]) != int(shot_scene_id):
+            raise ValueError(f"{member['handle'] or ref} belongs to another scene; only the shot's own scene's cast can be attached")
 
 
 def reorder_scenes(project_id, ordered_ids: list) -> list[dict]:
@@ -3452,6 +3692,18 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     reference_urls: list[tuple[str, str]] = []
     for entry in shot.get("elements") or []:
         element_id = entry["ref"] if isinstance(entry, dict) else str(entry)
+        if element_id.startswith(CAST_REF_PREFIX):
+            # Task 13: a cast member contributes its dressed images, in order, at this position.
+            member = get_cast_member(element_id[len(CAST_REF_PREFIX):])
+            if not member:
+                warnings.append(f"Cast member '{element_id}' no longer exists and was skipped.")
+                continue
+            tag = (member.get("handle") or element_id).lstrip("@")
+            if not member.get("images"):
+                warnings.append(f"{member.get('handle') or element_id} has no dressed images yet and was skipped.")
+            for index, url in enumerate(member.get("images") or []):
+                reference_urls.append((str(url), f"cast-{tag}-{index + 1}"))
+            continue
         url = resolve_element_primary_image_url(element_id)
         if url:
             reference_urls.append((url, f"element-{element_id}"))
@@ -9258,6 +9510,61 @@ def api_scenes_update(scene_id):
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "scene": scene})
+
+
+@app.route("/api/scenes/<int:scene_id>/cast", methods=["GET"])
+@login_required
+def api_scene_cast_list(scene_id):
+    if not get_scene(scene_id):
+        return jsonify({"ok": False, "error": "Scene not found"}), 404
+    return jsonify({"ok": True, "cast": fetch_cast(scene_id)})
+
+
+@app.route("/api/scenes/<int:scene_id>/cast", methods=["POST"])
+@login_required
+def api_scene_cast_create(scene_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        member, note = create_cast_member(scene_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "cast_member": member, "handle_note": note})
+
+
+@app.route("/api/scenes/<int:scene_id>/cast/reorder", methods=["POST"])
+@login_required
+def api_scene_cast_reorder(scene_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        cast = reorder_cast(scene_id, body.get("ids") or [])
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "cast": cast})
+
+
+@app.route("/api/cast/<int:cast_id>", methods=["PATCH"])
+@login_required
+def api_cast_update(cast_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        member, note = update_cast_member(cast_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "cast_member": member, "handle_note": note})
+
+
+@app.route("/api/cast/<int:cast_id>", methods=["DELETE"])
+@login_required
+def api_cast_delete(cast_id):
+    if not delete_cast_member(cast_id):
+        return jsonify({"ok": False, "error": "Cast member not found"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/scenes/<int:scene_id>", methods=["DELETE"])

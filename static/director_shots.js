@@ -67,6 +67,13 @@
   let selectedSceneId = "";        // "" = all shots
   let sceneDragId = "";
   let environmentCatalog = null;   // environment elements for the scene editor
+  const castCache = {};            // sceneId -> cast[]
+  let castForm = null;             // inline cast form state while open
+  let castPickingImages = false;   // reference picker is open for the cast form
+  let castDragId = "";
+  const CAST_PREFIX = "cast:";
+  const isCastRef = (ref) => String(ref || "").startsWith(CAST_PREFIX);
+  const castIdOf = (ref) => String(ref || "").slice(CAST_PREFIX.length);
   let stylesCache = null;          // styles available to the active project
   let stylesPromise = null;
   let styleForm = null;            // { mode: "new"|"edit", id, name, text, images[], projectOnly } while the inline form is open
@@ -1017,6 +1024,7 @@
 
   function onStyleImagesPicked(urls) {
     stylePickingImages = false;
+    if (castPickingImages) { onCastImagesPicked(urls); return; }
     if (!styleForm) return;
     if (styleScanPending) {
       styleScanPending = false;
@@ -1139,6 +1147,7 @@
     { key: "brief", label: "Brief", field: "brief", rows: 4, hint: "What happens here, where, who is in it." },
     { key: "script", label: "Script", field: "script", rows: 16, hint: "The dialogue and action for the whole scene. Paste the pages.", script: true },
     { key: "environment", label: "Environment", environment: true },
+    { key: "cast", label: "Cast", cast: true },
     { key: "shots", label: "Shots", shots: true },
     { key: "notes", label: "Notes", field: "note", rows: 3, hint: "Anything the crew should know." },
   ];
@@ -1189,13 +1198,17 @@
             <div class="ds-attach-actions"><select class="ds-field-input ds-style-select" data-scene-field="environment_id"><option value="">No environment</option>${options}</select>${sceneLockMarkup(scene, "environment_id")}</div>
           </div>
         </div>`;
+      } else if (section.cast) {
+        const cast = castCache[String(scene.id)];
+        filled = Boolean(cast && cast.length);
+        body = renderCastSection(scene, cast);
       } else if (section.shots) {
         filled = mine.length > 0;
         body = `<div class="ds-shot-rows ds-scene-shots" id="dsSceneShotRows">${mine.map(shotRowMarkup).join("") || '<div class="ds-shot-empty">No shots in this scene yet.</div>'}</div>
           <div class="ds-attach-actions"><button type="button" class="history-filter-toggle" id="dsSceneAddShot">+ Add shot to scene</button><span class="ds-attach-hint">Drag to reorder \u00b7 one ordering for the whole film</span></div>`;
       }
       return `<details class="ds-section${filled ? " has-content" : " is-empty"}${section.script ? " ds-section-script" : ""}" data-section="scene_${section.key}" ${isSectionOpen("scene_" + section.key) ? "open" : ""}>
-        <summary>${esc(section.label)}${section.shots ? `<span class="ds-section-count">${mine.length}</span>` : (filled ? '<span class="ds-section-check">\u2713</span>' : "")}</summary>${body}</details>`;
+        <summary>${esc(section.label)}${section.shots ? `<span class="ds-section-count">${mine.length}</span>` : (section.cast ? `<span class="ds-section-count">${(castCache[String(scene.id)] || []).length}</span>` : (filled ? '<span class="ds-section-check">\u2713</span>' : ""))}</summary>${body}</details>`;
     }).join("");
     const nameLocked = lockedOf("name");
     host.innerHTML = `
@@ -1214,9 +1227,182 @@
     host.querySelectorAll("[data-scene-field]").forEach((input) => input.addEventListener("change", () => saveSceneField(scene.id, input.dataset.sceneField, input.value)));
     host.querySelectorAll("[data-scene-lock]").forEach((button) => button.addEventListener("click", () => toggleSceneLock(scene.id, button.dataset.sceneLock)));
     $("dsSceneAddShot")?.addEventListener("click", () => createShot({ scene_id: scene.id, after_id: lastShotIdInScene(scene.id) }));
+    bindCastSection(scene);
+    if (!castCache[String(scene.id)]) loadCast(scene.id);
     $("dsSceneShowShots")?.addEventListener("click", () => { selectScene(scene.id); if (typeof window.setPromptMode === "function") window.setPromptMode("shot"); });
     bindRowEvents("dsSceneShotRows");
     ensureEnvironmentCatalog().then((changed) => { if (changed && findScene(selectedSceneId) === scene) renderSceneEditor(); });
+  }
+
+  // ---- cast: one talent, dressed for this scene ------------------------------
+  async function loadCast(sceneId) {
+    try {
+      const payload = await api(`/api/scenes/${sceneId}/cast`);
+      castCache[String(sceneId)] = payload.cast || [];
+    } catch (error) {
+      castCache[String(sceneId)] = [];
+    }
+    if (String(selectedSceneId) === String(sceneId)) renderSceneEditor();
+    if (findShot(selectedId) && String(findShot(selectedId).scene_id || "") === String(sceneId)) renderEditor();
+  }
+
+  function castThumbs(images, editable) {
+    return (images || []).map((url, index) => `<span class="ds-style-thumb${editable ? " ds-style-thumb-edit" : ""}"><img src="${esc(url)}" alt="" draggable="false" title="${esc(String(url).split("/").pop())}">${editable ? `<button type="button" class="ds-chip-remove" data-cast-img-remove="${index}" title="Remove">&times;</button>` : ""}</span>`).join("");
+  }
+
+  function renderCastForm(scene) {
+    const form = castForm;
+    const el = form.element || {};
+    return `<div class="ds-style-form ds-cast-form" id="dsCastForm">
+      <div class="ds-cast-form-id">${el.img_url ? `<img class="ds-cast-id" src="${esc(el.img_url)}" alt="" draggable="false">` : '<span class="ds-cast-id ds-cast-id-missing"></span>'}<div><div class="ds-style-name">${esc(el.name || form.element_id || "")}</div><div class="ds-section-hint">Talent element \u00b7 the identity</div></div></div>
+      <div class="ds-section-grid">
+        <div class="ds-field"><div class="ds-field-label"><span>Character name</span></div><input class="ds-field-input" id="dsCastCharacter" type="text" value="${esc(form.character_name || "")}" placeholder="Who they are in the story" autocomplete="off"></div>
+        <div class="ds-field"><div class="ds-field-label"><span>Look name</span></div><input class="ds-field-input" id="dsCastLook" type="text" value="${esc(form.look_name || "")}" placeholder="Trench, BW, Suit\u2026" autocomplete="off"></div>
+        ${form.mode === "edit" ? `<div class="ds-field"><div class="ds-field-label"><span>Handle</span></div><input class="ds-field-input" id="dsCastHandle" type="text" value="${esc(form.handle || "")}" placeholder="@Character_Look" autocomplete="off"></div>` : ""}
+        <div class="ds-field"><div class="ds-field-label"><span>Note</span></div><input class="ds-field-input" id="dsCastNote" type="text" value="${esc(form.note || "")}" autocomplete="off"></div>
+      </div>
+      <div class="ds-field ds-field-wide"><div class="ds-field-label"><span>Dressed reference sheet</span></div>
+        <div class="ds-style-board">${castThumbs(form.images, true) || '<span class="ds-chip-empty">No images yet.</span>'}</div>
+        <div class="ds-attach-actions"><button type="button" class="history-filter-toggle" id="dsCastAddImages">+ Add images</button></div>
+      </div>
+      <div class="ds-attach-actions">
+        <button type="button" class="history-filter-toggle ds-style-save" id="dsCastSave">${form.mode === "edit" ? "Save cast member" : "Add to cast"}</button>
+        <button type="button" class="history-filter-toggle" id="dsCastCancel">Cancel</button>
+        <span class="ds-shot-status-line" id="dsCastFormError"></span>
+      </div>
+    </div>`;
+  }
+
+  function renderCastSection(scene, cast) {
+    if (castForm && !castForm.pendingPick && String(castForm.scene_id) === String(scene.id)) return `<div class="ds-cast">${renderCastForm(scene)}</div>`;
+    if (!cast) return '<div class="ds-cast"><div class="ds-chip-empty">Loading cast\u2026</div></div>';
+    const cards = cast.map((member, index) => {
+      const locked = (field) => Array.isArray(member.locked_fields) && member.locked_fields.includes(field);
+      const missing = !member.element;
+      return `<div class="ds-cast-card${missing ? " is-missing" : ""}" draggable="true" data-cast-id="${member.id}" data-index="${index}">
+        ${missing ? '<span class="ds-cast-id ds-cast-id-missing" title="The talent element is gone from the library"></span>' : `<img class="ds-cast-id" src="${esc(member.element.img_url)}" alt="" draggable="false" title="${esc(member.element.name)}">`}
+        <div class="ds-cast-body">
+          <div class="ds-cast-head"><span class="ds-cast-pos">${index + 1}</span><span class="ds-style-name">${esc(member.character_name || member.element?.name || member.element_id)}</span>${member.look_name ? `<span class="ds-cast-look">${esc(member.look_name)}</span>` : ""}<code class="ds-cast-handle" title="Handle \u2014 the compiler will use this">${esc(member.handle || "")}</code>${missing ? '<span class="ds-style-offnote">element missing</span>' : ""}</div>
+          <div class="ds-style-board">${castThumbs(member.images, false) || '<span class="ds-chip-empty">No dressed images yet.</span>'}</div>
+          ${member.note ? `<div class="ds-section-hint">${esc(member.note)}</div>` : ""}
+        </div>
+        <div class="ds-cast-actions">
+          <button type="button" class="ds-shot-mini" data-cast-action="edit" title="Edit">Edit</button>
+          <button type="button" class="ds-shot-mini ds-shot-mini-danger" data-cast-action="delete" title="Remove from this scene">&times;</button>
+          <button type="button" class="ds-lock${(locked("character_name") || locked("look_name") || locked("images")) ? " is-locked" : ""}" data-cast-lock="${member.id}" title="${(locked("character_name") || locked("look_name") || locked("images")) ? "Locked by hand edit \u2014 click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${(locked("character_name") || locked("look_name") || locked("images")) ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>
+        </div>
+      </div>`;
+    }).join("");
+    return `<div class="ds-cast">
+      <div class="ds-cast-list" id="dsCastList">${cards || '<div class="ds-chip-empty">No cast yet. Add who is in this scene, dressed for it.</div>'}</div>
+      <div class="ds-attach-actions"><button type="button" class="history-filter-toggle" id="dsCastAdd">+ Add cast member</button><span class="ds-attach-hint">Pick a talent element, then name the character and the look. Drag to reorder.</span></div>
+      <div class="ds-shot-status-line" id="dsCastStatus"></div>
+    </div>`;
+  }
+
+  function setCastStatus(message, tone = "") {
+    const el = $("dsCastStatus") || $("dsCastFormError");
+    if (!el) { setSceneStatus(message, tone); return; }
+    el.textContent = message || ""; el.className = "ds-shot-status-line" + (tone ? " " + tone : "");
+  }
+
+  function syncCastFormFromInputs() {
+    if (!castForm) return;
+    castForm.character_name = $("dsCastCharacter")?.value ?? castForm.character_name;
+    castForm.look_name = $("dsCastLook")?.value ?? castForm.look_name;
+    castForm.note = $("dsCastNote")?.value ?? castForm.note;
+    if ($("dsCastHandle")) castForm.handle = $("dsCastHandle").value;
+  }
+
+  function bindCastSection(scene) {
+    const host = $("dsSceneEditor");
+    if (!host) return;
+    host.querySelector("#dsCastAdd")?.addEventListener("click", () => {
+      // Talent comes from the existing Elements modal, filtered to Characters, single pick.
+      try { elCurrentCat = "characters"; } catch (e) {}
+      castForm = { mode: "new", scene_id: scene.id, element_id: "", element: null, character_name: "", look_name: "", images: [], note: "", pendingPick: true };
+      if (typeof window.openElements === "function") window.openElements("scene-cast");
+    });
+    host.querySelector("#dsCastCancel")?.addEventListener("click", () => { castForm = null; renderSceneEditor(); });
+    host.querySelector("#dsCastAddImages")?.addEventListener("click", () => {
+      syncCastFormFromInputs();
+      castPickingImages = true; stylePickingImages = true;
+      if (typeof window.openLovedPicker === "function") window.openLovedPicker("shot-refs");
+    });
+    host.querySelectorAll("[data-cast-img-remove]").forEach((button) => button.addEventListener("click", () => { syncCastFormFromInputs(); castForm.images.splice(Number(button.dataset.castImgRemove), 1); renderSceneEditor(); }));
+    host.querySelector("#dsCastSave")?.addEventListener("click", async () => {
+      syncCastFormFromInputs();
+      const err = $("dsCastFormError");
+      if (!castForm.character_name.trim()) { if (err) { err.textContent = "Give the character a name."; err.className = "ds-shot-status-line error"; } return; }
+      const body = { element_id: castForm.element_id, character_name: castForm.character_name, look_name: castForm.look_name, note: castForm.note, images: castForm.images };
+      if (castForm.mode === "edit") body.handle = castForm.handle;
+      try {
+        const payload = castForm.mode === "edit"
+          ? await api(`/api/cast/${castForm.id}`, { method: "PATCH", body })
+          : await api(`/api/scenes/${scene.id}/cast`, { method: "POST", body });
+        castForm = null;
+        await loadCast(scene.id);
+        if (payload.handle_note) setCastStatus(payload.handle_note, "error");
+        else setCastStatus(`${payload.cast_member.handle} saved.`, "success");
+      } catch (error) {
+        if (err) { err.textContent = error.message || "Could not save."; err.className = "ds-shot-status-line error"; }
+      }
+    });
+    const list = host.querySelector("#dsCastList");
+    if (!list) return;
+    list.querySelectorAll(".ds-cast-card").forEach((card) => {
+      const id = card.dataset.castId;
+      const member = (castCache[String(scene.id)] || []).find((m) => String(m.id) === id);
+      card.querySelector('[data-cast-action="edit"]')?.addEventListener("click", () => {
+        castForm = { mode: "edit", id: member.id, scene_id: scene.id, element_id: member.element_id, element: member.element, character_name: member.character_name, look_name: member.look_name, handle: member.handle, images: (member.images || []).slice(), note: member.note || "" };
+        renderSceneEditor();
+      });
+      const del = card.querySelector('[data-cast-action="delete"]');
+      del?.addEventListener("click", async () => {
+        if (del.dataset.armed !== "1") { del.dataset.armed = "1"; del.textContent = "Sure?"; del.classList.add("is-armed"); window.setTimeout(() => { del.dataset.armed = ""; del.innerHTML = "&times;"; del.classList.remove("is-armed"); }, 2500); return; }
+        try { await api(`/api/cast/${id}`, { method: "DELETE" }); await loadCast(scene.id); } catch (error) { setCastStatus(error.message || "Could not remove.", "error"); }
+      });
+      card.querySelector("[data-cast-lock]")?.addEventListener("click", async () => {
+        const locked = Array.isArray(member.locked_fields) ? member.locked_fields : [];
+        const next = locked.length ? [] : ["character_name", "look_name", "images"];
+        try { await api(`/api/cast/${id}`, { method: "PATCH", body: { locked_fields: next } }); await loadCast(scene.id); } catch (error) { setCastStatus(error.message || "Could not change the lock.", "error"); }
+      });
+      card.addEventListener("dragstart", (event) => { castDragId = id; card.classList.add("is-dragging"); event.dataTransfer.effectAllowed = "move"; try { event.dataTransfer.setData("text/plain", "ds-cast:" + id); } catch (e) {} });
+      card.addEventListener("dragend", () => { castDragId = ""; list.querySelectorAll(".ds-cast-card").forEach((el) => el.classList.remove("is-dragging", "drop-before", "drop-after")); });
+      card.addEventListener("dragover", (event) => {
+        if (!castDragId || castDragId === id) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = "move";
+        const rect = card.getBoundingClientRect(); const before = event.clientY < rect.top + rect.height / 2;
+        card.classList.toggle("drop-before", before); card.classList.toggle("drop-after", !before);
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("drop-before", "drop-after"));
+      card.addEventListener("drop", async (event) => {
+        if (!castDragId || castDragId === id) return;
+        event.preventDefault();
+        const rect = card.getBoundingClientRect(); const before = event.clientY < rect.top + rect.height / 2;
+        const ids = (castCache[String(scene.id)] || []).map((m) => String(m.id)).filter((v) => v !== castDragId);
+        const target = ids.indexOf(id); ids.splice(before ? target : target + 1, 0, castDragId);
+        try { const payload = await api(`/api/scenes/${scene.id}/cast/reorder`, { method: "POST", body: { ids: ids.map(Number) } }); castCache[String(scene.id)] = payload.cast || []; renderSceneEditor(); }
+        catch (error) { setCastStatus(error.message || "Could not reorder.", "error"); }
+      });
+    });
+  }
+
+  function onCastElementPicked(asset) {
+    if (!castForm || !castForm.pendingPick) return;
+    castForm.pendingPick = false;
+    castForm.element_id = String(asset.id || "");
+    castForm.element = { id: asset.id, name: asset.name, img_url: asset.img_url };
+    if (!castForm.character_name) castForm.character_name = String(asset.name || "").split(" ")[0] || "";
+    renderSceneEditor();
+    window.setTimeout(() => $("dsCastLook")?.focus(), 50);
+  }
+
+  function onCastImagesPicked(urls) {
+    castPickingImages = false;
+    if (!castForm) return;
+    (urls || []).forEach((url) => { const path = String(url || "").trim(); if (path && !castForm.images.includes(path)) castForm.images.push(path); });
+    renderSceneEditor();
   }
 
   async function saveSceneField(sceneId, field, value) {
@@ -1473,6 +1659,14 @@
   }
 
   function attachmentThumb(listKey, value) {
+    if (listKey === "elements" && isCastRef(value)) {
+      const shot = findShot(selectedId);
+      const cast = shot ? (castCache[String(shot.scene_id || "")] || []) : [];
+      const member = cast.find((m) => String(m.id) === castIdOf(value));
+      if (!member) return { url: "", label: `cast #${castIdOf(value)}`, missing: Boolean(shot && castCache[String(shot.scene_id || "")]), cast: true };
+      const url = (member.images && member.images[0]) || (member.element && member.element.img_url) || "";
+      return { url, label: `${member.handle || "@" + member.character_name} \u00b7 ${member.look_name || "look"}`, missing: false, cast: true, member };
+    }
     if (listKey === "elements") {
       const asset = elementCatalog ? elementCatalog[String(value)] : null;
       return { url: asset ? asset.img_url : "", label: asset ? asset.name : String(value), missing: Boolean(elementCatalog && !asset) };
@@ -1487,7 +1681,7 @@
     const chips = values.map((value, index) => {
       const thumb = attachmentThumb(group.list, refOf(value));
       const role = roleOf(value);
-      return `<div class="ds-chip${thumb.missing ? " is-missing" : ""} role-${role}" draggable="true" data-list="${group.list}" data-index="${index}" title="${esc(thumb.label)}${thumb.missing ? " (not found in Elements)" : ""}">
+      return `<div class="ds-chip${thumb.missing ? " is-missing" : ""}${thumb.cast ? " is-cast" : ""} role-${role}" draggable="true" data-list="${group.list}" data-index="${index}" title="${esc(thumb.label)}${thumb.missing ? " (not found)" : ""}${thumb.member ? ` \u00b7 ${thumb.member.images.length} dressed image(s)` : ""}">
         <span class="ds-chip-pos">${index + 1}</span>
         ${thumb.url ? `<img src="${esc(thumb.url)}" alt="" draggable="false">` : `<span class="ds-chip-noimg"></span>`}
         <span class="ds-chip-text">
@@ -1501,6 +1695,7 @@
       <div class="ds-chip-row">${chips || `<span class="ds-chip-empty">${esc(group.empty)}</span>`}</div>
       <div class="ds-attach-actions">
         <button type="button" class="history-filter-toggle" data-attach-add="${group.list}">${esc(group.addLabel)}</button>
+        ${group.list === "elements" && shot.scene_id ? `<select class="ds-field-input ds-style-select" id="dsAttachCast"><option value="">+ Add cast\u2026</option>${(castCache[String(shot.scene_id)] || []).map((m) => `<option value="${m.id}">${esc(m.handle || m.character_name)} \u00b7 ${esc(m.look_name || "")}</option>`).join("")}</select>` : ""}
         <button type="button" class="ds-lock${locked ? " is-locked" : ""}" data-lock="${group.list}" title="${locked ? "Locked by hand edit \u2014 click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${locked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>
         <span class="ds-attach-hint">Drag to reorder \u00b7 order is the reference order</span>
       </div>
@@ -1508,6 +1703,15 @@
   }
 
   function bindAttachmentLists(shot) {
+    if (shot.scene_id && !castCache[String(shot.scene_id)]) loadCast(shot.scene_id);
+    document.querySelector("#dsShotEditor #dsAttachCast")?.addEventListener("change", (event) => {
+      const id = event.target.value;
+      if (!id) return;
+      const values = (shot.elements || []).map(asEntry);
+      const ref = CAST_PREFIX + id;
+      if (!values.some((entry) => entry.ref === ref)) values.push({ ref, role: "character" });
+      saveAttachmentList(shot.id, "elements", values);
+    });
     document.querySelectorAll("#dsShotEditor [data-attach-add]").forEach((button) => {
       button.addEventListener("click", () => {
         pendingAttachShotId = String(shot.id);
@@ -1734,7 +1938,7 @@
     onScopeChange(null);
   }
 
-  window.directorShots = { reload: loadShots, select: selectShot, selectScene, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked, renderShot };
+  window.directorShots = { reload: loadShots, select: selectShot, selectScene, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked, onCastElementPicked, renderShot };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });

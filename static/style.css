@@ -10033,3 +10033,34 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .el-filter-summary { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .el-filters-bar.is-collapsed { padding: 6px 12px; }
 #elementsOverlay.el-drop-active .modal-box { outline: 2px dashed var(--accent); outline-offset: -6px; }
+
+/* ---- Director Studio: scene cast (Task 13) ---- */
+.ds-cast { display: grid; gap: 10px; }
+.ds-cast-list { display: grid; gap: 8px; }
+.ds-cast-card {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 8px 10px;
+  position: relative;
+  cursor: grab;
+}
+.ds-cast-card.is-dragging { opacity: 0.4; }
+.ds-cast-card.drop-before::before, .ds-cast-card.drop-after::after { content: ""; position: absolute; left: 6px; right: 6px; height: 2px; background: var(--accent); }
+.ds-cast-card.drop-before::before { top: -5px; } .ds-cast-card.drop-after::after { bottom: -5px; }
+.ds-cast-card.is-missing { border-style: dashed; }
+.ds-cast-id { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; background: var(--surface3); display: block; border: 2px solid var(--border2); }
+.ds-cast-id-missing { border-style: dashed; }
+.ds-cast-body { display: grid; gap: 6px; min-width: 0; }
+.ds-cast-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ds-cast-pos { font-size: 10px; font-weight: 800; color: var(--text-muted); }
+.ds-cast-look { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border2); border-radius: 999px; padding: 1px 8px; }
+.ds-cast-handle { font-size: 11px; color: var(--accent-text); background: rgba(var(--accent-rgb), 0.1); border-radius: 6px; padding: 1px 6px; }
+.ds-cast-actions { display: flex; gap: 4px; align-items: center; }
+.ds-cast-form-id { display: flex; align-items: center; gap: 10px; }
+.ds-chip.is-cast { border-color: rgba(var(--accent-rgb), 0.5); }
+.ds-chip.is-cast img { border-radius: 50%; }
