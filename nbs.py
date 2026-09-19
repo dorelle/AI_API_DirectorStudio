@@ -2184,6 +2184,45 @@ def init_studio_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            slug TEXT NOT NULL,
+            scene TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            duration_seconds REAL,
+            beat_marker TEXT NOT NULL DEFAULT '',
+            action_text TEXT NOT NULL DEFAULT '',
+            dialogue TEXT NOT NULL DEFAULT '',
+            audio_cue TEXT NOT NULL DEFAULT '',
+            shot_size TEXT NOT NULL DEFAULT '',
+            angle TEXT NOT NULL DEFAULT '',
+            movement TEXT NOT NULL DEFAULT '[]',
+            lens TEXT NOT NULL DEFAULT '',
+            aperture TEXT NOT NULL DEFAULT '',
+            speed_ramp TEXT NOT NULL DEFAULT '',
+            first_frame TEXT NOT NULL DEFAULT '',
+            last_frame TEXT NOT NULL DEFAULT '',
+            chain_from_previous INTEGER NOT NULL DEFAULT 0,
+            engine TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'empty',
+            locked_fields TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE (project_id, slug)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shot_slug_counters (
+            project_id INTEGER PRIMARY KEY,
+            next_number INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
     ensure_task_templates_columns(conn)
     now_ts = utc_now_iso()
     for template in DEFAULT_TASK_TEMPLATES + DEFAULT_FILM_TASK_TEMPLATES:
@@ -2364,6 +2403,228 @@ def apply_project_record_scope(payload: dict) -> dict:
     payload["assetClient"] = record["assetClient"]
     payload["assetProject"] = record["assetProject"]
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Shots (Director Studio, Task 04). Identity lives in slug, order in sort_order.
+# ---------------------------------------------------------------------------
+SHOT_STATUSES = ("empty", "queued", "rendering", "done", "rejected")
+SHOT_TEXT_FIELDS = (
+    "scene", "beat_marker", "action_text", "dialogue", "audio_cue",
+    "shot_size", "angle", "lens", "aperture", "speed_ramp",
+    "first_frame", "last_frame", "engine", "note",
+)
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields")
+SHOT_SORT_STEP = 10
+
+
+def shot_row_to_dict(row) -> dict:
+    item = dict(row)
+    for key, fallback in (("movement", []), ("locked_fields", [])):
+        try:
+            value = json.loads(item.get(key) or "[]")
+        except json.JSONDecodeError:
+            value = fallback
+        item[key] = value if isinstance(value, list) else fallback
+    item["chain_from_previous"] = bool(item.get("chain_from_previous"))
+    return item
+
+
+def fetch_shots(project_id) -> list[dict]:
+    try:
+        project_id = int(project_id)
+    except (TypeError, ValueError):
+        return []
+    init_studio_db()
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT * FROM shots WHERE project_id = ? ORDER BY sort_order ASC, id ASC", (project_id,)
+    ).fetchall()
+    conn.close()
+    return [shot_row_to_dict(row) for row in rows]
+
+
+def get_shot(shot_id) -> dict | None:
+    try:
+        shot_id = int(shot_id)
+    except (TypeError, ValueError):
+        return None
+    init_studio_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM shots WHERE id = ? LIMIT 1", (shot_id,)).fetchone()
+    conn.close()
+    return shot_row_to_dict(row) if row else None
+
+
+def next_shot_slug(conn, project: dict) -> str:
+    """<ProjectStem>_SH### from a per-project counter that only ever increments."""
+    row = conn.execute("SELECT next_number FROM shot_slug_counters WHERE project_id = ?", (project["id"],)).fetchone()
+    number = int(row["next_number"]) if row else 1
+    conn.execute(
+        "INSERT INTO shot_slug_counters (project_id, next_number) VALUES (?, ?) "
+        "ON CONFLICT(project_id) DO UPDATE SET next_number = excluded.next_number",
+        (project["id"], number + 1),
+    )
+    stem = sanitize_asset_filename_stem(project.get("name", ""), fallback="project")
+    return f"{stem}_SH{number:03d}"
+
+
+def _normalize_shot_movement(raw) -> str:
+    if isinstance(raw, str):
+        values = [part for part in raw.split(",")]
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        values = []
+    cleaned = []
+    for value in values:
+        text = sanitize_asset_meta_text(value)
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return json.dumps(cleaned[:3], ensure_ascii=False)
+
+
+def _normalize_shot_locked_fields(raw) -> str:
+    values = raw if isinstance(raw, list) else []
+    cleaned = []
+    for value in values:
+        text = str(value or "").strip()
+        if text in SHOT_EDITABLE_FIELDS and text not in ("locked_fields",) and text not in cleaned:
+            cleaned.append(text)
+    return json.dumps(cleaned)
+
+
+def _shot_updates_from_body(body: dict) -> dict:
+    updates = {}
+    for key in SHOT_TEXT_FIELDS:
+        if key in body:
+            updates[key] = str(body.get(key) or "").strip()
+    if "duration_seconds" in body:
+        raw = body.get("duration_seconds")
+        if raw is None or str(raw).strip() == "":
+            updates["duration_seconds"] = None
+        else:
+            try:
+                updates["duration_seconds"] = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError("duration_seconds must be a number")
+    if "movement" in body:
+        updates["movement"] = _normalize_shot_movement(body.get("movement"))
+    if "chain_from_previous" in body:
+        updates["chain_from_previous"] = 1 if body.get("chain_from_previous") else 0
+    if "status" in body:
+        status = str(body.get("status") or "").strip().lower()
+        if status not in SHOT_STATUSES:
+            raise ValueError("status must be one of " + ", ".join(SHOT_STATUSES))
+        updates["status"] = status
+    if "locked_fields" in body:
+        updates["locked_fields"] = _normalize_shot_locked_fields(body.get("locked_fields"))
+    return updates
+
+
+def _compact_shot_sort_orders(conn, project_id: int) -> None:
+    rows = conn.execute("SELECT id FROM shots WHERE project_id = ? ORDER BY sort_order ASC, id ASC", (project_id,)).fetchall()
+    for index, row in enumerate(rows):
+        conn.execute("UPDATE shots SET sort_order = ? WHERE id = ?", ((index + 1) * SHOT_SORT_STEP, row["id"]))
+
+
+def create_shot(body: dict) -> dict:
+    project = get_project(body.get("project_id"))
+    if not project:
+        raise LookupError("Project not found")
+    if project.get("type") != "film":
+        raise ValueError("Shots belong to film projects")
+    updates = _shot_updates_from_body(body)
+    init_studio_db()
+    conn = get_db_connection()
+    after_id = body.get("after_id")
+    if after_id not in (None, ""):
+        # Insert between: place directly after the given row, in the gap before its successor.
+        prev_row = conn.execute("SELECT id, sort_order, chain_from_previous FROM shots WHERE id = ? AND project_id = ?", (int(after_id), project["id"])).fetchone()
+        if not prev_row:
+            conn.close()
+            raise LookupError("Row to insert after was not found")
+        next_row = conn.execute(
+            "SELECT id, sort_order FROM shots WHERE project_id = ? AND (sort_order > ? OR (sort_order = ? AND id > ?)) ORDER BY sort_order ASC, id ASC LIMIT 1",
+            (project["id"], prev_row["sort_order"], prev_row["sort_order"], prev_row["id"]),
+        ).fetchone()
+        if next_row is None:
+            sort_order = int(prev_row["sort_order"]) + SHOT_SORT_STEP
+        elif int(next_row["sort_order"]) - int(prev_row["sort_order"]) >= 2:
+            sort_order = (int(prev_row["sort_order"]) + int(next_row["sort_order"])) // 2
+        else:
+            _compact_shot_sort_orders(conn, project["id"])
+            prev_sort = int(conn.execute("SELECT sort_order FROM shots WHERE id = ?", (prev_row["id"],)).fetchone()["sort_order"])
+            sort_order = prev_sort + SHOT_SORT_STEP // 2
+        if "chain_from_previous" not in updates:
+            updates["chain_from_previous"] = int(prev_row["chain_from_previous"] or 0)
+    else:
+        last = conn.execute("SELECT MAX(sort_order) AS m FROM shots WHERE project_id = ?", (project["id"],)).fetchone()
+        sort_order = (int(last["m"]) if last and last["m"] is not None else 0) + SHOT_SORT_STEP
+    slug = next_shot_slug(conn, project)
+    columns = ["project_id", "slug", "sort_order", "created_at"] + list(updates.keys())
+    values = [project["id"], slug, sort_order, utc_now_iso()] + list(updates.values())
+    cursor = conn.execute(
+        f"INSERT INTO shots ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        values,
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return get_shot(new_id)
+
+
+def update_shot(shot_id, body: dict) -> dict:
+    existing = get_shot(shot_id)
+    if not existing:
+        raise LookupError("Shot not found")
+    updates = _shot_updates_from_body(body)
+    # slug, sort_order, project_id are never writable here
+    if updates:
+        conn = get_db_connection()
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(f"UPDATE shots SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
+        conn.commit()
+        conn.close()
+    return get_shot(existing["id"])
+
+
+def delete_shot(shot_id) -> bool:
+    existing = get_shot(shot_id)
+    if not existing:
+        return False
+    conn = get_db_connection()
+    conn.execute("DELETE FROM shots WHERE id = ?", (existing["id"],))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def reorder_shots(project_id, ordered_ids: list) -> list[dict]:
+    """Rewrite sort_order from the given id order. Slugs are untouched.
+    A row whose predecessor changed loses chain_from_previous."""
+    project = get_project(project_id)
+    if not project:
+        raise LookupError("Project not found")
+    try:
+        ordered_ids = [int(value) for value in ordered_ids]
+    except (TypeError, ValueError):
+        raise ValueError("ids must be integers")
+    current = fetch_shots(project["id"])
+    current_ids = [row["id"] for row in current]
+    if sorted(ordered_ids) != sorted(current_ids):
+        raise ValueError("ids must contain every shot of the project exactly once")
+    old_prev = {row_id: (current_ids[index - 1] if index > 0 else None) for index, row_id in enumerate(current_ids)}
+    conn = get_db_connection()
+    for index, row_id in enumerate(ordered_ids):
+        new_prev = ordered_ids[index - 1] if index > 0 else None
+        if new_prev != old_prev.get(row_id):
+            conn.execute("UPDATE shots SET sort_order = ?, chain_from_previous = 0 WHERE id = ?", ((index + 1) * SHOT_SORT_STEP, row_id))
+        else:
+            conn.execute("UPDATE shots SET sort_order = ? WHERE id = ?", ((index + 1) * SHOT_SORT_STEP, row_id))
+    conn.commit()
+    conn.close()
+    return fetch_shots(project["id"])
 
 
 def get_task_template(slug: str) -> dict | None:
@@ -7923,6 +8184,80 @@ def api_projects_update(project_id):
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     return jsonify({"ok": True, "project": project})
+
+
+# ---------------------------------------------------------------------------
+# API - Shots (Director Studio)
+# ---------------------------------------------------------------------------
+@app.route("/api/shots", methods=["GET"])
+@login_required
+def api_shots_list():
+    project = get_project(request.args.get("project_id"))
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    return jsonify({"ok": True, "shots": fetch_shots(project["id"])})
+
+
+@app.route("/api/shots", methods=["POST"])
+@login_required
+def api_shots_create():
+    body = request.get_json(silent=True) or {}
+    try:
+        shot = create_shot(body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "shot": shot})
+
+
+@app.route("/api/shots/reorder", methods=["POST"])
+@login_required
+def api_shots_reorder():
+    body = request.get_json(silent=True) or {}
+    try:
+        shots = reorder_shots(body.get("project_id"), body.get("ids") or [])
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "shots": shots})
+
+
+@app.route("/api/shots/<int:shot_id>", methods=["GET"])
+@login_required
+def api_shots_get(shot_id):
+    shot = get_shot(shot_id)
+    if not shot:
+        return jsonify({"ok": False, "error": "Shot not found"}), 404
+    return jsonify({"ok": True, "shot": shot})
+
+
+@app.route("/api/shots/<int:shot_id>", methods=["PATCH"])
+@login_required
+def api_shots_update(shot_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        shot = update_shot(shot_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "shot": shot})
+
+
+@app.route("/api/shots/<int:shot_id>", methods=["DELETE"])
+@login_required
+def api_shots_delete(shot_id):
+    if not delete_shot(shot_id):
+        return jsonify({"ok": False, "error": "Shot not found"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/reference-archive-list")
