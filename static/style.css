@@ -10099,3 +10099,9 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .ds-compile-text.is-proposed { border-color: rgba(var(--accent-rgb), 0.5); }
 .ds-compile-text em { color: var(--text-muted); }
 .ds-compile-context { font-size: 11px; line-height: 1.4; white-space: pre-wrap; max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface2); color: var(--text-dim); margin: 0; }
+
+/* ---- Task 16: dormant key cards + take filenames ---- */
+.settings-card.is-dormant { opacity: 0.8; }
+.dormant-badge { font-size: 11px; font-weight: 500; color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; margin-left: 8px; vertical-align: middle; }
+.ds-take-file { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
+.ds-take.is-approved .ds-take-file { color: var(--green); }

@@ -238,6 +238,75 @@
   </section>
 
   <section class="settings-card">
+    <h2>Topaz API Key</h2>
+    <p class="settings-desc">Topaz Labs image/video enhancement. Stored here for the upscale step; verify checks the key against the Topaz API without generating anything.</p>
+
+    <div class="key-row">
+      <div class="input-wrap">
+        <input type="password" id="topazApiKeyInput" placeholder="Topaz API key" autocomplete="off"
+               value="{{ '*' * 20 if has_topaz_key else '' }}">
+        <button class="btn-icon" title="Show/Hide" onclick="toggleSimpleKeyVisibility('topazApiKeyInput')">Show</button>
+      </div>
+      <button class="btn-verify" id="verifyTopazBtn" onclick="verifyTopazKey()">
+        <span id="verifyTopazLabel">Verify</span>
+      </button>
+      <button class="btn-save" onclick="saveSimpleKey('topaz_api_key', 'topazApiKeyInput', 'topazKeyStatus', 'Topaz')">Save</button>
+    </div>
+
+    <div id="topazKeyStatus" class="key-status"></div>
+
+    {% if has_topaz_key %}
+    <div class="key-current">
+      Current key: <code>{{ masked_topaz_key }}</code>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="settings-card is-dormant">
+    <h2>BFL API Key <span class="dormant-badge">Dormant &middot; not in use yet</span></h2>
+    <p class="settings-desc">Black Forest Labs (FLUX). The key is stored so it is ready later; no provider call uses it yet, so there is nothing to verify.</p>
+
+    <div class="key-row">
+      <div class="input-wrap">
+        <input type="password" id="bflApiKeyInput" placeholder="BFL API key" autocomplete="off"
+               value="{{ '*' * 20 if has_bfl_key else '' }}">
+        <button class="btn-icon" title="Show/Hide" onclick="toggleSimpleKeyVisibility('bflApiKeyInput')">Show</button>
+      </div>
+      <button class="btn-save" onclick="saveSimpleKey('bfl_api_key', 'bflApiKeyInput', 'bflKeyStatus', 'BFL')">Save</button>
+    </div>
+
+    <div id="bflKeyStatus" class="key-status"></div>
+
+    {% if has_bfl_key %}
+    <div class="key-current">
+      Current key: <code>{{ masked_bfl_key }}</code>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="settings-card is-dormant">
+    <h2>Clarity API Key <span class="dormant-badge">Dormant &middot; not in use yet</span></h2>
+    <p class="settings-desc">Clarity upscaler. The key is stored so it is ready later; no provider call uses it yet, so there is nothing to verify.</p>
+
+    <div class="key-row">
+      <div class="input-wrap">
+        <input type="password" id="clarityApiKeyInput" placeholder="Clarity API key" autocomplete="off"
+               value="{{ '*' * 20 if has_clarity_key else '' }}">
+        <button class="btn-icon" title="Show/Hide" onclick="toggleSimpleKeyVisibility('clarityApiKeyInput')">Show</button>
+      </div>
+      <button class="btn-save" onclick="saveSimpleKey('clarity_api_key', 'clarityApiKeyInput', 'clarityKeyStatus', 'Clarity')">Save</button>
+    </div>
+
+    <div id="clarityKeyStatus" class="key-status"></div>
+
+    {% if has_clarity_key %}
+    <div class="key-current">
+      Current key: <code>{{ masked_clarity_key }}</code>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="settings-card">
     <h2>OpenAI API Key</h2>
     <p class="settings-desc">Used only by the Workbench agent (Director Studio). The agent reads the project and proposes; it never writes to it. Without a key the agent column stays idle.</p>
 
@@ -816,6 +885,70 @@ function showLumaKeyStatus(msg, type) {
   el.textContent = msg;
   el.className = "key-status " + type;
   el.style.display = "block";
+}
+
+// ---- Task 16: Topaz (verify + save) and the dormant BFL / Clarity keys (save only) ----
+function toggleSimpleKeyVisibility(inputId) {
+  const inp = document.getElementById(inputId);
+  inp.type = inp.type === "password" ? "text" : "password";
+}
+
+function showSimpleKeyStatus(statusId, msg, type) {
+  const el = document.getElementById(statusId);
+  el.textContent = msg;
+  el.className = "key-status " + type;
+  el.style.display = "block";
+}
+
+async function saveSimpleKey(configKey, inputId, statusId, label) {
+  const inp = document.getElementById(inputId);
+  const key = inp.value.trim();
+  if (!key || key.startsWith("*")) {
+    showSimpleKeyStatus(statusId, "Please enter the new " + label + " key before saving", "error");
+    return;
+  }
+  const r = await fetch("/api/save-config", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({[configKey]: key})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    showSimpleKeyStatus(statusId, label + " key saved successfully", "success");
+    inp.type = "password";
+    inp.value = "*".repeat(20);
+    setTimeout(() => location.reload(), 1000);
+  }
+}
+
+async function verifyTopazKey() {
+  const inp = document.getElementById("topazApiKeyInput");
+  const key = inp.value.trim();
+  if (!key || key.startsWith("*")) {
+    showSimpleKeyStatus("topazKeyStatus", "Please enter the new Topaz key to verify first", "error");
+    return;
+  }
+  const btn = document.getElementById("verifyTopazBtn");
+  const label = document.getElementById("verifyTopazLabel");
+  label.textContent = "Verifying...";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/verify-topaz-key", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({topaz_api_key: key})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showSimpleKeyStatus("topazKeyStatus", "OK: " + (d.message || "Valid key!"), "success");
+    } else {
+      showSimpleKeyStatus("topazKeyStatus", "Error: " + (d.error || "Invalid key"), "error");
+    }
+  } catch(e) {
+    showSimpleKeyStatus("topazKeyStatus", "Network error: " + e.message, "error");
+  }
+  label.textContent = "Verify";
+  btn.disabled = false;
 }
 
 // ---- Disk and temp (Task 14b) ----

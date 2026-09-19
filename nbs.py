@@ -169,19 +169,25 @@ def normalize_asset_metadata(raw: dict | None, *, require_filename: bool = False
     rel_parts = [part for part in relpath.split("/") if part]
     inferred_client = rel_parts[0] if len(rel_parts) >= 4 else ""
     inferred_project = rel_parts[1] if len(rel_parts) >= 4 else ""
-    inferred_shot = rel_parts[2] if len(rel_parts) >= 4 else ""
-    inferred_filename = os.path.splitext(rel_parts[3])[0] if len(rel_parts) >= 4 else ""
+    # Task 16: a film shot with a scene files as client/project/scene/shot/file (5 parts)
+    inferred_scene = rel_parts[2] if len(rel_parts) >= 5 else ""
+    inferred_shot = rel_parts[3] if len(rel_parts) >= 5 else (rel_parts[2] if len(rel_parts) >= 4 else "")
+    inferred_filename = os.path.splitext(rel_parts[4])[0] if len(rel_parts) >= 5 else (os.path.splitext(rel_parts[3])[0] if len(rel_parts) >= 4 else "")
     client = normalize_asset_scope_text(raw.get("assetClient", raw.get("client", inferred_client))) or ASSET_UNCATEGORIZED_VALUE
     project = normalize_asset_scope_text(raw.get("assetProject", raw.get("project", inferred_project))) or ASSET_UNCATEGORIZED_VALUE
     shot = normalize_asset_scope_text(raw.get("assetShot", raw.get("shot", inferred_shot))) or ASSET_UNCATEGORIZED_VALUE
+    scene = normalize_asset_scope_text(raw.get("assetScene", raw.get("scene_slug", inferred_scene)))
     filename_seed = raw.get("assetFilename", raw.get("filename_stem", raw.get("filenameStem", inferred_filename or fallback_filename)))
     filename = sanitize_asset_filename_stem(filename_seed, fallback=fallback_filename or "untitled") if (require_filename or str(filename_seed or "").strip()) else ""
-    return {
+    meta = {
         "assetClient": client,
         "assetProject": project,
         "assetShot": shot,
         "assetFilename": filename,
     }
+    if scene and scene != ASSET_UNCATEGORIZED_VALUE:
+        meta["assetScene"] = scene   # only present when a scene applies; everything else keeps its shape
+    return meta
 
 
 def merge_asset_metadata(params_meta: dict | None, payload: dict | None = None, *, fallback_source: dict | None = None) -> dict:
@@ -256,17 +262,27 @@ def merge_request_settings(params_meta: dict | None, payload: dict | None = None
     return merged
 
 
+def asset_scene_segment(asset_meta: dict) -> str:
+    """Task 16: the scene slug between project and shot, or '' when the asset has no scene."""
+    scene = normalize_asset_scope_text(asset_meta.get("assetScene", ""))
+    return "" if (not scene or scene == ASSET_UNCATEGORIZED_VALUE) else scene
+
+
 def build_asset_storage_relative_dir(asset_meta: dict) -> str:
-    return os.path.join(
+    scene = asset_scene_segment(asset_meta)
+    parts = [
         sanitize_asset_path_segment(asset_meta.get("assetClient")),
         sanitize_asset_path_segment(asset_meta.get("assetProject")),
-        sanitize_asset_path_segment(asset_meta.get("assetShot")),
-    )
+    ]
+    if scene:
+        parts.append(sanitize_asset_path_segment(scene))
+    parts.append(sanitize_asset_path_segment(asset_meta.get("assetShot")))
+    return os.path.join(*parts)
 
 
 def build_asset_storage_file_prefix(asset_meta: dict) -> str:
     prefix_parts = []
-    for key in ("assetClient", "assetProject", "assetShot"):
+    for key in ("assetClient", "assetProject", "assetScene", "assetShot"):
         value = sanitize_asset_meta_text(asset_meta.get(key, ""))
         value = normalize_asset_scope_text(value)
         if value and value != ASSET_UNCATEGORIZED_VALUE:
@@ -489,6 +505,9 @@ DEFAULT_CONFIG = {
     "runway_api_key": "",
     "luma_api_key": "",
     "openai_api_key": "",
+    "topaz_api_key": "",
+    "bfl_api_key": "",       # dormant (Task 16): stored, not wired to any provider
+    "clarity_api_key": "",   # dormant (Task 16): stored, not wired to any provider
     "openai_model": "gpt-4o-mini",
     "agent_instructions": "",
     "flask_secret_key": "",
@@ -2274,6 +2293,17 @@ def ensure_shots_columns(conn):
             conn.execute(f"ALTER TABLE shots ADD COLUMN {name} {ddl}")
 
 
+def ensure_takes_columns(conn):
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(takes)").fetchall()}
+    desired = {
+        # Task 16: the take's original numbered path; asset_path carries the _approved name while approved
+        "asset_path_numbered": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, ddl in desired.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE takes ADD COLUMN {name} {ddl}")
+
+
 def ensure_task_templates_columns(conn):
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_templates)").fetchall()}
     desired = {
@@ -2476,6 +2506,7 @@ def init_studio_db():
     )
     ensure_projects_columns(conn)
     ensure_shots_columns(conn)
+    ensure_takes_columns(conn)
     ensure_task_templates_columns(conn)
     now_ts = utc_now_iso()
     for template in DEFAULT_TASK_TEMPLATES + DEFAULT_FILM_TASK_TEMPLATES:
@@ -2987,7 +3018,34 @@ def update_shot(shot_id, body: dict) -> dict:
         conn.execute(f"UPDATE shots SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
         conn.commit()
         conn.close()
+    if updates.get("scene_id") and updates["scene_id"] != existing.get("scene_id"):
+        _place_shot_in_scene(existing["project_id"], existing["id"], updates["scene_id"])   # Task 16
     return get_shot(existing["id"])
+
+
+def _place_shot_in_scene(project_id: int, shot_id: int, scene_id: int) -> None:
+    """Move the shot's sort_order to sit after the last shot of its new scene. Everything else keeps
+    its relative order; slugs never change. An empty scene places the shot where the scene sits in
+    scene order (after the last shot of any earlier scene)."""
+    rows = fetch_shots(project_id)
+    order = [row["id"] for row in rows if row["id"] != shot_id]
+    scene_rank = {scene["id"]: index for index, scene in enumerate(fetch_scenes(project_id))}
+    target_rank = scene_rank.get(scene_id)
+    if target_rank is None:
+        return
+    others = [row for row in rows if row["id"] != shot_id]
+    in_scene = [index for index, row in enumerate(others) if row.get("scene_id") == scene_id]
+    if in_scene:
+        insert_at = in_scene[-1] + 1                      # after the last shot of the new scene
+    else:
+        insert_at = 0                                     # empty scene: after the last shot of any earlier scene
+        for index, row in enumerate(others):
+            rank = scene_rank.get(row.get("scene_id"))
+            if rank is not None and rank <= target_rank:
+                insert_at = index + 1
+    order.insert(insert_at, shot_id)
+    if order != [row["id"] for row in rows]:
+        reorder_shots(project_id, order)
 
 
 def delete_shot(shot_id) -> bool:
@@ -3947,7 +4005,7 @@ def create_take(shot_id: int, *, engine: str, prompt_sent: str, job_id: str = ""
 
 
 def update_take(take_id, **fields) -> dict | None:
-    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at"}
+    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at", "asset_path_numbered"}
     updates = {key: value for key, value in fields.items() if key in allowed}
     if "status" in updates and updates["status"] not in TAKE_STATUSES:
         raise ValueError("status must be one of " + ", ".join(TAKE_STATUSES))
@@ -3967,6 +4025,139 @@ def update_take(take_id, **fields) -> dict | None:
     conn.commit()
     conn.close()
     return get_take(existing["id"])
+
+
+# ---- Task 16: approval state in the filename. The bridge matches *_approved.<ext> and needs no DB. ----
+APPROVED_TAKE_SUFFIX = "_approved"
+_TAKE_NUMBER_RE = re.compile(r"_take(?:_\d+)?$")
+
+
+def _approved_take_stem(stem: str) -> str:
+    """'<prefix>_take' / '<prefix>_take_3' -> '<prefix>_approved'; any other stem gets the suffix appended."""
+    if _TAKE_NUMBER_RE.search(stem):
+        return _TAKE_NUMBER_RE.sub(APPROVED_TAKE_SUFFIX, stem)
+    return stem + APPROVED_TAKE_SUFFIX
+
+
+def _take_file_set(video_url: str, poster_url: str = "") -> dict:
+    """Local files that belong to one take: the video, its .json sidecar, its poster. Video must exist."""
+    video_path = resolve_local_video_url_to_path(video_url)
+    if not video_path:
+        raise FileNotFoundError(f"The take's file is not on disk: {video_url or '(no path)'}")
+    stem, ext = os.path.splitext(os.path.basename(video_path))
+    folder = os.path.dirname(video_path)
+    files = {"video": video_path, "stem": stem, "ext": ext, "dir": folder}
+    json_path = os.path.join(folder, f"{stem}.json")
+    if os.path.isfile(json_path):
+        files["json"] = json_path
+    poster_path = resolve_local_video_url_to_path(poster_url) if poster_url else ""
+    if poster_path:
+        files["poster"] = poster_path
+    return files
+
+
+def _rename_take_files(files: dict, new_stem: str) -> dict:
+    """Rename video (+ sidecar, + poster) to new_stem, all or nothing. Returns the new URLs."""
+    folder, old_stem, ext = files["dir"], files["stem"], files["ext"]
+    plan = [(files["video"], os.path.join(folder, f"{new_stem}{ext}"))]
+    if files.get("json"):
+        plan.append((files["json"], os.path.join(folder, f"{new_stem}.json")))
+    if files.get("poster"):
+        poster_name = os.path.basename(files["poster"])
+        plan.append((files["poster"], os.path.join(folder, poster_name.replace(old_stem, new_stem, 1) if poster_name.startswith(old_stem) else f"{new_stem}_poster.png")))
+    for _src, dst in plan:
+        if os.path.exists(dst):
+            raise FileExistsError(f"Cannot rename: {os.path.basename(dst)} already exists")
+    done = []
+    try:
+        for src, dst in plan:
+            os.replace(src, dst)
+            done.append((src, dst))
+    except Exception:
+        for src, dst in reversed(done):   # undo what was renamed so far
+            try:
+                os.replace(dst, src)
+            except Exception:
+                pass
+        raise
+    new_video = plan[0][1]
+    relpath = os.path.relpath(new_video, VIDEOS_DIR).replace("\\", "/")
+    result = {"asset_path": f"/videos/{relpath}", "poster_path": ""}
+    if files.get("poster"):
+        result["poster_path"] = f"/videos/{os.path.relpath(plan[-1][1], VIDEOS_DIR).replace(chr(92), '/')}"
+    if files.get("json"):
+        try:   # keep the sidecar pointing at the renamed files so the Assets browser still finds them
+            json_path = plan[1][1]
+            with open(json_path, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+            meta["filename"] = os.path.basename(new_video)
+            meta["assetRelpath"] = relpath
+            if files.get("poster"):
+                meta["poster_filename"] = os.path.basename(plan[-1][1])
+                meta["poster_url"] = result["poster_path"]
+            with open(json_path, "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+    return result
+
+
+def _free_numbered_stem(folder: str, stem: str, ext: str) -> str:
+    """The take's numbered name, or the next free _take_N if that name was reused meanwhile."""
+    if not os.path.exists(os.path.join(folder, f"{stem}{ext}")) and not os.path.exists(os.path.join(folder, f"{stem}.json")):
+        return stem
+    base = _TAKE_NUMBER_RE.sub("", stem) if _TAKE_NUMBER_RE.search(stem) else stem
+    counter = 2
+    while True:
+        candidate = f"{base}_take_{counter}"
+        if not os.path.exists(os.path.join(folder, f"{candidate}{ext}")) and not os.path.exists(os.path.join(folder, f"{candidate}.json")):
+            return candidate
+        counter += 1
+
+
+def _revert_take_files(take: dict) -> dict:
+    """approved name -> numbered name. Returns the DB fields to store."""
+    files = _take_file_set(take.get("asset_path", ""), take.get("poster_path", ""))
+    numbered_url = take.get("asset_path_numbered") or ""
+    wanted_stem = os.path.splitext(os.path.basename(numbered_url))[0] if numbered_url else _TAKE_NUMBER_RE.sub("", files["stem"])
+    if not wanted_stem or wanted_stem == files["stem"]:
+        return {}
+    new_stem = _free_numbered_stem(files["dir"], wanted_stem, files["ext"])
+    return _rename_take_files(files, new_stem)
+
+
+def set_take_approval(take_id, approved: bool) -> dict:
+    """Approve/unapprove with the state mirrored in the filename. Files first; the database only
+    changes once every rename succeeded, so disk and database never disagree."""
+    take = get_take(take_id)
+    if not take:
+        raise LookupError("Take not found")
+    if bool(take.get("approved")) == bool(approved):
+        return take
+    if approved and take.get("status") != "done":
+        raise ValueError("Only a finished take can be approved.")
+    if approved:
+        previous = next((t for t in fetch_takes(take["shot_id"]) if t["approved"] and t["id"] != take["id"]), None)
+        reverted = {}
+        if previous:
+            reverted = _revert_take_files(previous)   # may raise: nothing has changed yet
+        files = _take_file_set(take.get("asset_path", ""), take.get("poster_path", ""))
+        try:
+            renamed = _rename_take_files(files, _approved_take_stem(files["stem"]))
+        except Exception:
+            if previous and reverted:   # put the previous approved file back so disk still matches the DB
+                try:
+                    _rename_take_files(_take_file_set(reverted["asset_path"], reverted.get("poster_path", "")), _approved_take_stem(os.path.splitext(os.path.basename(reverted["asset_path"]))[0]))
+                except Exception:
+                    pass
+            raise
+        if previous:
+            update_take(previous["id"], approved=False, **{k: v for k, v in reverted.items() if k in ("asset_path", "poster_path")})
+        return update_take(take["id"], approved=True, asset_path=renamed["asset_path"], poster_path=renamed.get("poster_path") or take.get("poster_path", ""),
+                           asset_path_numbered=take.get("asset_path_numbered") or take.get("asset_path", ""))
+    reverted = _revert_take_files(take)
+    fields = {k: v for k, v in reverted.items() if k in ("asset_path", "poster_path")}
+    return update_take(take["id"], approved=False, **fields)
 
 
 def delete_take(take_id) -> bool:
@@ -4340,6 +4531,10 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
         "shotId": shot["id"],
         "shotSlug": shot["slug"],
     }
+    # Task 16: a film shot with a scene files under client/project/<scene>/<shot>; no scene -> unchanged
+    render_scene = get_scene(shot.get("scene_id")) if shot.get("scene_id") else None
+    if render_scene:
+        payload["assetScene"] = render_scene["slug"]
     if not payload["prompt"]:
         raise ValueError("The shot has no prompt. Write one in the Prompt section first.")
     if style and str(style.get("text") or "").strip():
@@ -6558,7 +6753,11 @@ def settings():
     kling_api_token = config.get("kling_api_token", "")
     luma_api_key = config.get("luma_api_key", "")
     openai_api_key = config.get("openai_api_key", "")
+    topaz_api_key = config.get("topaz_api_key", ""); bfl_api_key = config.get("bfl_api_key", ""); clarity_api_key = config.get("clarity_api_key", "")
     return render_template("settings.html",
+                           masked_topaz_key=mask_api_key(topaz_api_key), has_topaz_key=bool(topaz_api_key),
+                           masked_bfl_key=mask_api_key(bfl_api_key), has_bfl_key=bool(bfl_api_key),
+                           masked_clarity_key=mask_api_key(clarity_api_key), has_clarity_key=bool(clarity_api_key),
                            masked_key=mask_api_key(api_key),
                            has_key=bool(api_key),
                            masked_fal_key=mask_api_key(fal_api_key),
@@ -9837,15 +10036,19 @@ def collect_asset_metadata_records() -> list[dict]:
         for current_root, dirnames, _ in os.walk(root_dir):
             rel_dir = os.path.relpath(current_root, root_dir).replace("\\", "/")
             rel_parts = [part for part in rel_dir.split("/") if part and part != "."]
-            if len(rel_parts) >= 4:
+            entries = os.listdir(current_root)
+            if len(rel_parts) >= 4 and not any(os.path.isfile(os.path.join(current_root, name)) for name in entries):
                 append_record(rel_parts[0], rel_parts[1], rel_parts[2], os.path.splitext(rel_parts[3])[0])
-            for file_name in os.listdir(current_root):
+            # a 4-deep directory holding files is client/project/scene/shot (Task 16): its files register it below
+            for file_name in entries:
                 file_path = os.path.join(current_root, file_name)
                 if not os.path.isfile(file_path):
                     continue
                 if file_name.lower().endswith(".json"):
                     continue
-                if len(rel_parts) >= 3:
+                if len(rel_parts) >= 4:
+                    append_record(rel_parts[0], rel_parts[1], rel_parts[3], os.path.splitext(file_name)[0])   # scene between project and shot (Task 16)
+                elif len(rel_parts) >= 3:
                     append_record(rel_parts[0], rel_parts[1], rel_parts[2], os.path.splitext(file_name)[0])
 
     for item in (
@@ -10489,15 +10692,17 @@ def api_shot_render_preview(shot_id):
 @login_required
 def api_take_update(take_id):
     body = request.get_json(silent=True) or {}
-    fields = {}
-    if "approved" in body:
-        fields["approved"] = bool(body.get("approved"))
     try:
-        take = update_take(take_id, **fields)
+        if "approved" in body:
+            take = set_take_approval(take_id, bool(body.get("approved")))   # Task 16: renames on disk, then the DB
+        else:
+            take = update_take(take_id)
     except LookupError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 404
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    except (OSError, FileExistsError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": f"Approval not changed: {exc}"}), 409
     return jsonify({"ok": True, "take": take, "shot": get_shot(take["shot_id"]) if take else None})
 
 
@@ -11417,6 +11622,9 @@ def api_save_config():
         config["luma_api_key"] = data["luma_api_key"].strip()
     if "openai_api_key" in data:
         config["openai_api_key"] = data["openai_api_key"].strip()
+    for dormant_key in ("topaz_api_key", "bfl_api_key", "clarity_api_key"):   # Task 16: stored only
+        if dormant_key in data:
+            config[dormant_key] = str(data[dormant_key] or "").strip()
     if "openai_model" in data:
         config["openai_model"] = str(data["openai_model"] or "").strip() or "gpt-4o-mini"
     if "agent_instructions" in data:
@@ -11445,6 +11653,31 @@ def api_verify_openai_key():
     except Exception:
         err = f"HTTP {response.status_code}"
     return jsonify({"ok": False, "error": err})
+
+
+TOPAZ_API_BASE = "https://api.topazlabs.com"
+
+
+@app.route("/api/verify-topaz-key", methods=["POST"])
+@login_required
+def api_verify_topaz_key():
+    """Topaz has no cheap list endpoint; a status probe answers 401/403 for a bad key and
+    404/400 for a good one (the id does not exist). Nothing is generated."""
+    data = request.get_json() or {}
+    key = (data.get("topaz_api_key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "Topaz API key is empty"})
+    try:
+        response = requests.get(f"{TOPAZ_API_BASE}/image/v1/status/verify-probe", headers={"X-API-Key": key, "Accept": "application/json"}, timeout=45)
+    except requests.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "Connection timeout"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+    if response.status_code in (401, 403):
+        return jsonify({"ok": False, "error": "Topaz rejected the key (HTTP %d)" % response.status_code})
+    if response.status_code in (200, 400, 404, 422):
+        return jsonify({"ok": True, "message": "Topaz accepted the key (HTTP %d on the probe)." % response.status_code})
+    return jsonify({"ok": False, "error": f"Unexpected reply from Topaz: HTTP {response.status_code}"})
 
 
 @app.route("/api/verify-fal-key", methods=["POST"])

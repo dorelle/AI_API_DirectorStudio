@@ -1554,6 +1554,7 @@
           <span class="ds-take-engine" title="${esc(take.engine)}">${esc(engineLabel || "\u2014")}</span>
           <span class="ds-take-time">${esc(formatTakeTime(take.completed_at || take.created_at))}</span>
         </div>
+        ${take.asset_path ? `<div class="ds-take-file" title="${esc(take.asset_path)}">${esc(String(take.asset_path).split("/").pop())}</div>` : ""}
         <div class="ds-take-actions">
           ${(!failed && !busy) ? `<button type="button" class="ds-card-btn" data-take-action="${take.approved ? "unapprove" : "approve"}">${take.approved ? "Unapprove" : "Approve"}</button>` : ""}
           ${!busy ? `<button type="button" class="ds-card-btn ds-take-delete" data-take-action="delete">Delete</button>` : ""}
