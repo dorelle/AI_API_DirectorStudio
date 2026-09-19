@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919a"></script>
-  <script defer src="/static/director_shots.js?v=20260919a"></script>
+  <script defer src="/static/director_shots.js?v=20260919b"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -1021,6 +1021,7 @@
 
     <div class="main-workspace" id="mainWorkspace">
       <div class="main-workspace-center">
+    <div class="ds-shot-strip" id="dsShotStrip" style="display:none" aria-label="Shot strip"></div>
     <div class="gallery" id="gallery">
       <div class="gallery-placeholder" id="galleryPlaceholder">
         <p>Generated images will appear here</p>
@@ -7023,7 +7024,7 @@ async function loadLovedPickerSource(source = pickerSource) {
 
     renderLovedPickerList(
       list,
-      (pickerTarget === "video" || pickerTarget === "video-end")
+      (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame")
         ? 1
         : (pickerTarget === "video-refs" ? getMaxVideoReferenceImages() : getMaxRefImages())
     );
@@ -7042,14 +7043,17 @@ function syncLovedPickerTargetUi() {
   const isVideoRefs = pickerTarget === "video-refs";
   const isEditGlobalRefs = pickerTarget === "edit-global-refs";
   const isEditSelectionRefs = pickerTarget === "edit-selection-refs";
+  const isShotFrame = pickerTarget === "shot-frame";
   if (title) {
-    title.textContent = isVideoEnd ? "Choose end frame" : (isVideoSource ? "Choose source image" : "Choose reference images");
+    title.textContent = isShotFrame ? "Choose first frame" : (isVideoEnd ? "Choose end frame" : (isVideoSource ? "Choose source image" : "Choose reference images"));
   }
   if (confirmBtn) {
-    confirmBtn.textContent = isVideoSource ? "Use selected" : "Add selected";
+    confirmBtn.textContent = (isVideoSource || isShotFrame) ? "Use selected" : "Add selected";
   }
   if (limitNote) {
-    if (isVideoEnd) {
+    if (isShotFrame) {
+      limitNote.textContent = "Choose one image as this shot's first frame.";
+    } else if (isVideoEnd) {
       limitNote.textContent = videoEndImage && videoEndImage.data
         ? "Choose one image to replace the current end frame."
         : "Choose one image to use as the video end frame.";
@@ -7076,6 +7080,7 @@ async function openLovedPicker(target = "refs") {
     target === "video-refs" ? "video-refs" :
     target === "edit-global-refs" ? "edit-global-refs" :
     target === "edit-selection-refs" ? "edit-selection-refs" :
+    target === "shot-frame" ? "shot-frame" :
     "refs";
   if (pickerTarget === "refs") {
     const maxRef = getMaxRefImages();
@@ -7101,7 +7106,7 @@ async function switchLovedPickerSource(source) {
 }
 
 function togglePickerCard(card, url, filename, maxRef) {
-  const remaining = (pickerTarget === "video" || pickerTarget === "video-end")
+  const remaining = (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame")
     ? 1
     : (pickerTarget === "video-refs"
       ? maxRef - videoReferenceImages.length
@@ -7109,7 +7114,7 @@ function togglePickerCard(card, url, filename, maxRef) {
         ? getEditReferenceStorageLimit()
         : maxRef - refImages.length));
   if (!pickerSelected.has(url) && pickerSelected.size >= remaining) {
-    if (pickerTarget === "video" || pickerTarget === "video-end") {
+    if (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame") {
       document.querySelectorAll(".picker-card.selected").forEach(el => el.classList.remove("selected"));
       pickerSelected.clear();
     } else {
@@ -7136,6 +7141,14 @@ function updatePickerSelCount() {
 async function confirmLovedPicker() {
   const urls = Array.from(pickerSelected);
   const target = pickerTarget;
+  if (target === "shot-frame") {
+    const item = pickerItemsByUrl.get(urls[0]) || {};
+    closeLovedPicker();
+    if (urls[0] && window.directorShots && typeof window.directorShots.onFramePicked === "function") {
+      window.directorShots.onFramePicked(urls[0], item);
+    }
+    return;
+  }
   closeLovedPicker();
   if (target === "video-end") {
     const url = urls[0];

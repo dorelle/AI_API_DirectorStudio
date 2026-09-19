@@ -9447,3 +9447,197 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .ds-lock svg { width: 13px; height: 13px; }
 .ds-lock:hover { color: var(--text); }
 .ds-lock.is-locked { color: var(--accent-text); }
+
+
+/* ---- Director Studio: shot strip (center area, Shot mode only) ---- */
+.main-workspace-center { position: relative; }
+
+.ds-shot-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ds-strip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px 6px;
+}
+
+.ds-strip-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.ds-strip-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ds-strip-track {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+}
+
+.ds-strip-empty {
+  margin: auto;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+.ds-card {
+  flex: 0 0 auto;
+  width: 236px;
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  scroll-snap-align: start;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.ds-card:hover { border-color: var(--text-muted); }
+.ds-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35);
+}
+.ds-card.is-dragging { opacity: 0.4; }
+.ds-card.is-drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.ds-card.drop-before::before,
+.ds-card.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  z-index: 2;
+}
+.ds-card.drop-before::before { left: -9px; }
+.ds-card.drop-after::after { right: -9px; }
+
+/* Fixed frame box: landscape and portrait both fit, never stretch. */
+.ds-card-frame {
+  position: relative;
+  width: 100%;
+  height: 150px;
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.ds-card-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+
+.ds-card-placeholder {
+  padding: 14px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.ds-card-placeholder .ds-shot-slug { display: block; font-size: 12px; margin-bottom: 4px; }
+
+.ds-card-status {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--text-muted);
+}
+.ds-card-status[data-status="queued"] { background: var(--blue); }
+.ds-card-status[data-status="rendering"] { background: var(--accent); }
+.ds-card-status[data-status="done"] { background: var(--green); }
+.ds-card-status[data-status="rejected"] { background: var(--red); }
+
+.ds-card-pos {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+.ds-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 8px 12px;
+  min-height: 34px;
+}
+.ds-card-foot .ds-shot-slug { flex: 0 0 auto; }
+.ds-card-foot .ds-shot-scene { flex: 1 1 auto; }
+
+.ds-card-actions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  padding: 6px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0));
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.ds-card:hover .ds-card-actions,
+.ds-card.is-selected .ds-card-actions { opacity: 1; }
+
+.ds-card-btn {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.ds-card-btn:hover { border-color: var(--accent); }
+
+.ds-card-empty .ds-card-frame { height: 184px; }
+.ds-card-placeholder-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}

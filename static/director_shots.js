@@ -42,6 +42,8 @@
   let selectedId = "";
   let railMode = "library";
   let dragId = "";
+  let stripDragId = "";
+  let stripPickShotId = "";
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -84,6 +86,7 @@
     const pill = $("promptModeShotBtn");
     if (toggle) toggle.style.display = film ? "" : "none";
     if (pill) pill.style.display = film ? "" : "none";
+    syncStrip();
     if (!film) {
       shots = [];
       selectedId = "";
@@ -159,6 +162,7 @@
       <div class="ds-shot-rows" id="dsShotRows">${rows || '<div class="ds-shot-empty">No shots yet. Add the first one.</div>'}</div>`;
     $("dsAddShotBtn")?.addEventListener("click", () => createShot());
     bindRowEvents();
+    renderStrip();
   }
 
   function bindRowEvents() {
@@ -222,6 +226,8 @@
     renderList();
     renderEditor();
     if (selectedId && typeof window.setPromptMode === "function") window.setPromptMode("shot");
+    const card = document.querySelector(`.ds-card[data-id="${selectedId}"]`);
+    if (card && typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
   }
 
   async function createShot(extra = {}) {
@@ -257,6 +263,198 @@
       setStatusLine(error.message || "Could not reorder.", "error");
       renderList();
     }
+  }
+
+  // ---- center area: the shot strip (Shot mode only) ---------------------
+  function isShotMode() {
+    const bar = $("promptBar");
+    return Boolean(bar && bar.dataset.promptMode === "shot");
+  }
+
+  function sizeStripToViewer() {
+    // The strip covers exactly the viewer (#gallery); the prompt bar below it stays where it is.
+    const strip = $("dsShotStrip");
+    const gallery = $("gallery");
+    if (!strip || !gallery) return;
+    strip.style.height = `${Math.max(0, Math.round(gallery.getBoundingClientRect().height))}px`;
+  }
+
+  function syncStrip() {
+    const strip = $("dsShotStrip");
+    if (!strip) return;
+    const show = isFilm() && isShotMode();
+    strip.style.display = show ? "" : "none";
+    if (show) {
+      sizeStripToViewer();
+      renderStrip();
+    }
+  }
+
+  function frameUrl(shot) {
+    const value = String(shot.first_frame || "").trim();
+    if (!value) return "";
+    if (/^(https?:)?\/\//i.test(value) || value.startsWith("/") || value.startsWith("data:")) return value;
+    return "";
+  }
+
+  function renderStrip() {
+    const strip = $("dsShotStrip");
+    if (!strip || strip.style.display === "none") return;
+    const cards = shots.map((shot, index) => {
+      const url = frameUrl(shot);
+      const selected = String(shot.id) === String(selectedId);
+      const frame = url
+        ? `<img src="${esc(url)}" alt="${esc(shot.slug)} first frame" draggable="false">`
+        : `<div class="ds-card-placeholder"><span class="ds-shot-slug">${esc(shot.slug)}</span>${esc(shot.scene || "No scene yet")}<span class="ds-card-placeholder-hint">No frame</span></div>`;
+      const actions = url
+        ? `<button type="button" class="ds-card-btn" data-card-action="pick">Replace</button><button type="button" class="ds-card-btn" data-card-action="clear">Clear</button>`
+        : `<button type="button" class="ds-card-btn" data-card-action="pick">Pick frame</button>`;
+      return `
+      <div class="ds-card${selected ? " is-selected" : ""}${url ? "" : " ds-card-empty"}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}">
+        <div class="ds-card-frame">
+          ${frame}
+          <span class="ds-card-status" data-status="${esc(shot.status)}" aria-label="${esc(STATUS_LABELS[shot.status] || shot.status)}"></span>
+          <span class="ds-card-pos">${index + 1}</span>
+          <div class="ds-card-actions">${actions}</div>
+        </div>
+        ${url ? `<div class="ds-card-foot"><span class="ds-shot-slug">${esc(shot.slug)}</span><span class="ds-shot-scene">${esc(shot.scene || "")}</span></div>` : ""}
+      </div>`;
+    }).join("");
+    strip.innerHTML = `
+      <div class="ds-strip-head">
+        <span class="ds-strip-title">Sequence <span class="ds-shot-count">${shots.length}</span> \u00b7 ${esc(project ? project.name : "")}</span>
+        <span class="ds-strip-hint">Drag cards to reorder \u00b7 drop a gallery image on a card to set its first frame</span>
+      </div>
+      <div class="ds-strip-track" id="dsStripTrack">${cards || '<div class="ds-strip-empty">No shots yet. Add one in the Shots panel on the right.</div>'}</div>`;
+    bindCardEvents();
+  }
+
+  function urlFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return "";
+    let raw = "";
+    try { raw = dataTransfer.getData("text/uri-list") || dataTransfer.getData("text/plain") || ""; } catch (e) {}
+    raw = String(raw || "").split(/\r?\n/).find((line) => line && !line.startsWith("#")) || "";
+    if (!raw) return "";
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      if (parsed.origin !== window.location.origin) return "";
+      if (!/^\/(generations|loved|reference-archive|reference-render|videos|elements)\//.test(parsed.pathname)) return "";
+      try { return decodeURIComponent(parsed.pathname); } catch (e) { return parsed.pathname; }
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function bindCardEvents() {
+    const track = $("dsStripTrack");
+    if (!track) return;
+    track.querySelectorAll(".ds-card").forEach((card) => {
+      const id = card.dataset.id;
+      card.addEventListener("click", (event) => {
+        const action = event.target.closest("[data-card-action]");
+        if (action) {
+          event.stopPropagation();
+          if (action.dataset.cardAction === "pick") pickFrame(id);
+          if (action.dataset.cardAction === "clear") setFirstFrame(id, "");
+          return;
+        }
+        selectShot(id);
+      });
+      card.addEventListener("dragstart", (event) => {
+        stripDragId = id;
+        card.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        try { event.dataTransfer.setData("text/plain", "ds-shot:" + id); } catch (e) {}
+      });
+      card.addEventListener("dragend", () => {
+        stripDragId = "";
+        track.querySelectorAll(".ds-card").forEach((el) => el.classList.remove("is-dragging", "drop-before", "drop-after", "is-drop-target"));
+      });
+      card.addEventListener("dragover", (event) => {
+        if (stripDragId) {
+          if (stripDragId === id) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          const rect = card.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          card.classList.toggle("drop-before", before);
+          card.classList.toggle("drop-after", !before);
+          return;
+        }
+        // Not a card drag: accept an image from the gallery (native <img> drag carries its URL).
+        const types = Array.from(event.dataTransfer?.types || []);
+        if (types.includes("text/uri-list") || types.includes("text/plain") || types.includes("Files")) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+          card.classList.add("is-drop-target");
+        }
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("drop-before", "drop-after", "is-drop-target"));
+      card.addEventListener("drop", (event) => {
+        if (stripDragId) {
+          if (stripDragId === id) return;
+          event.preventDefault();
+          const rect = card.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          const ids = shots.map((shot) => String(shot.id)).filter((value) => value !== stripDragId);
+          const targetIndex = ids.indexOf(id);
+          ids.splice(before ? targetIndex : targetIndex + 1, 0, stripDragId);
+          reorder(ids);
+          return;
+        }
+        const url = urlFromDataTransfer(event.dataTransfer);
+        card.classList.remove("is-drop-target");
+        if (!url) return;
+        event.preventDefault();
+        setFirstFrame(id, url);
+      });
+    });
+  }
+
+  function pickFrame(shotId) {
+    stripPickShotId = String(shotId);
+    if (typeof window.openLovedPicker === "function") {
+      window.openLovedPicker("shot-frame");
+    } else {
+      setStatusLine("The reference picker is not available on this page.", "error");
+    }
+  }
+
+  function onFramePicked(url, item) {
+    const shotId = stripPickShotId || selectedId;
+    stripPickShotId = "";
+    if (!shotId || !url) return;
+    setFirstFrame(shotId, url);
+  }
+
+  async function setFirstFrame(shotId, url) {
+    const shot = findShot(shotId);
+    if (!shot) return;
+    // Picking from the card is a hand edit too: first_frame gets locked like any other field.
+    const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
+    if (url && !locked.includes("first_frame")) locked.push("first_frame");
+    try {
+      const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { first_frame: url || "", locked_fields: locked } });
+      const index = shots.findIndex((item) => item.id === payload.shot.id);
+      if (index >= 0) shots[index] = payload.shot;
+      renderList();
+      if (String(selectedId) === String(shotId)) renderEditor();
+      flashSaved(url ? "Frame set" : "Frame cleared");
+    } catch (error) {
+      setStatusLine(error.message || "Could not set the frame.", "error");
+    }
+  }
+
+  function watchPromptMode() {
+    const bar = $("promptBar");
+    if (bar && typeof MutationObserver !== "undefined") {
+      new MutationObserver(() => syncStrip()).observe(bar, { attributes: true, attributeFilter: ["data-prompt-mode"] });
+    }
+    const gallery = $("gallery");
+    if (gallery && typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(() => sizeStripToViewer()).observe(gallery);
+    }
+    window.addEventListener("resize", sizeStripToViewer);
   }
 
   // ---- bottom panel editor ----------------------------------------------
@@ -423,11 +621,12 @@
   function init() {
     if (!$("dsShotList") || !$("dsShotEditor")) return;
     bindRailToggle();
+    watchPromptMode();
     window.addEventListener("asset-meta-change", (event) => onScopeChange(event.detail));
     onScopeChange(null);
   }
 
-  window.directorShots = { reload: loadShots, select: selectShot };
+  window.directorShots = { reload: loadShots, select: selectShot, onFramePicked, setFirstFrame };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });
