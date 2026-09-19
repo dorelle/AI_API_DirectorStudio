@@ -8648,11 +8648,11 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 /* â”€â”€ Version badge in navbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .nav-version {
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.5px;
-  color: var(--text-muted);
-  background: var(--surface3);
-  border: 1px solid var(--border2);
+  color: var(--accent-text);
+  background: rgba(var(--accent-rgb), 0.14);
+  border: 1px solid rgba(var(--accent-rgb), 0.45);
   border-radius: 4px;
   padding: 1px 5px;
   vertical-align: middle;

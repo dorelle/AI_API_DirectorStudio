@@ -2,7 +2,7 @@
 title Directors Studio
 cd /d "%~dp0"
 echo.
-echo   Directors Studio 1.4
+echo   Directors Studio 1.0
 echo   ============================
 echo.
 

@@ -1,3 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <text y=".9em" font-size="90">🍌</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#AA34F8"/>
+  <path d="M22 20l3-5h14l3 5h6a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V24a4 4 0 0 1 4-4z" fill="none" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"/>
+  <circle cx="32" cy="33" r="8" fill="none" stroke="#fff" stroke-width="3.5"/>
+  <circle cx="45" cy="25" r="1.8" fill="#fff"/>
 </svg>

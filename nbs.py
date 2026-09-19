@@ -13,7 +13,7 @@ import subprocess
 import importlib.util
 import os as _os
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.0"
 
 def _bootstrap():
     deps = [
