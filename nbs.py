@@ -872,6 +872,7 @@ PROVIDER_LABELS = {
     "kling": "Kling",
     "runway": "Runway",
     "luma": "Luma",
+    "openai": "OpenAI",
 }
 
 # Which Settings key each provider needs. The catalog is never filtered by this; the
@@ -883,6 +884,7 @@ PROVIDER_KEY_FIELDS = {
     "kling":    ("kling_api_token",  "Kling token"),
     "luma":     ("luma_api_key",     "Luma key"),
     "runway":   ("runway_api_key",   "Runway key (no Settings card yet)"),
+    "openai":   ("openai_api_key",   "OpenAI API key"),
 }
 
 
@@ -913,6 +915,10 @@ FAL_NANO_BANANA_2_TEXT_ID       = "fal-ai/nano-banana-2"
 FAL_NANO_BANANA_2_EDIT_ID       = "fal-ai/nano-banana-2/edit"
 FAL_GPT_IMAGE_2_TEXT_ID         = "fal-ai/gpt-image-2"
 FAL_GPT_IMAGE_2_EDIT_ID         = "fal-ai/gpt-image-2/edit"
+# GPT Image 2 straight from OpenAI (Images API) with the OpenAI key; the same family as the Fal route
+OPENAI_GPT_IMAGE_2_TEXT_ID      = "openai/gpt-image-2"
+OPENAI_GPT_IMAGE_2_EDIT_ID      = "openai/gpt-image-2/edit"
+OPENAI_GPT_IMAGE_2_API_MODEL    = "gpt-image-2"
 FAL_SEEDREAM_45_TEXT_ID         = "fal-ai/bytedance/seedream/v4.5/text-to-image"
 FAL_SEEDREAM_45_EDIT_ID         = "fal-ai/bytedance/seedream/v4.5/edit"
 FAL_SEEDREAM_5_TEXT_ID          = "fal-ai/bytedance/seedream/v5/lite/text-to-image"
@@ -1329,6 +1335,30 @@ MODELS_INFO = {
         "max_ref_images": 16,
         "ref_note":       "Fal API mode - edit model, requires at least 1 reference image and supports up to 16"
     },
+    "openai/gpt-image-2": {
+        "provider":       "openai",
+        "provider_label": "OpenAI",
+        "family":         "gpt-image-2",
+        "label":          "GPT Image 2",
+        "resolutions":    ["1K","2K","4K"],
+        "thinking":       False,
+        "aspect_ratios":  ASPECT_RATIOS_GPT_IMAGE_2,
+        "max_images":     4,
+        "max_ref_images": 0,
+        "ref_note":       "OpenAI Images API - text-to-image only (no reference images, no seed)"
+    },
+    "openai/gpt-image-2/edit": {
+        "provider":       "openai",
+        "provider_label": "OpenAI",
+        "family":         "gpt-image-2-edit",
+        "label":          "GPT Image 2 Edit",
+        "resolutions":    ["1K","2K","4K"],
+        "thinking":       False,
+        "aspect_ratios":  ASPECT_RATIOS_GPT_IMAGE_2,
+        "max_images":     4,
+        "max_ref_images": 16,
+        "ref_note":       "OpenAI Images API - edit model, requires at least 1 reference image and supports up to 16"
+    },
     "fal-ai/bytedance/seedream/v4.5/text-to-image": {
         "provider":       "fal",
         "provider_label": "Fal",
@@ -1411,18 +1441,20 @@ MODEL_FAMILIES = {
         "label": "GPT Image 2 Edit",
         "badge": "GPT2E",
         "default_provider": "fal",
-        "provider_order": ["fal"],
+        "provider_order": ["fal", "openai"],
         "providers": {
             "fal": FAL_GPT_IMAGE_2_EDIT_ID,
+            "openai": OPENAI_GPT_IMAGE_2_EDIT_ID,
         },
     },
     "gpt-image-2": {
         "label": "GPT Image 2",
         "badge": "GPT2",
         "default_provider": "fal",
-        "provider_order": ["fal"],
+        "provider_order": ["fal", "openai"],
         "providers": {
             "fal": FAL_GPT_IMAGE_2_TEXT_ID,
+            "openai": OPENAI_GPT_IMAGE_2_TEXT_ID,
         },
     },
     "nano-banana-2": {
@@ -13729,6 +13761,137 @@ def run_fal_gpt_image_2_generation_job(body: dict, api_key: str) -> dict:
     }
 
 
+OPENAI_GPT_IMAGE_2_MIN_PIXELS = 786_432   # 1024x768 accepted, 800x800 refused (probed 2026-09-19)
+
+
+def _openai_gpt_image_2_size(image_size: str, aspect_ratio: str) -> tuple[int, int]:
+    """Same pixel budget as the Fal route, adjusted to OpenAI's rules for gpt-image-2 (probed):
+    both sides divisible by 16, and at least ~0.79 MP. Only 1K 16:9 / 9:16 fall short (1024x576 -> 1280x720)."""
+    width, height = resolve_fal_gpt_image_2_dimensions(build_fal_gpt_image_2_image_size(image_size, aspect_ratio))
+    if (width, height) in ((1024, 576), (576, 1024)):          # the one short case: use the standard HD frame
+        return (1280, 720) if width > height else (720, 1280)
+    if width * height < OPENAI_GPT_IMAGE_2_MIN_PIXELS:
+        scale = (OPENAI_GPT_IMAGE_2_MIN_PIXELS / float(width * height)) ** 0.5
+        width, height = int(round(width * scale)), int(round(height * scale))
+    width, height = max(16, (width + 8) // 16 * 16), max(16, (height + 8) // 16 * 16)
+    while width * height < OPENAI_GPT_IMAGE_2_MIN_PIXELS:
+        width, height = width + 16, height + 16
+    return width, height
+
+
+def _openai_gpt_image_2_result(body: dict, model_id: str, data: dict, width: int, height: int, prompt: str, ref_images: list) -> dict:
+    items = data.get("data") or []
+    png_images = []
+    for item in items:
+        b64_data = str((item or {}).get("b64_json") or "").strip()
+        if b64_data:
+            png_images.append({"mime_type": "image/png", "data": b64_data})
+    if not png_images:
+        raise RuntimeError("OpenAI returned no image for this request.")
+    model_info = MODELS_INFO[model_id]
+    usage = data.get("usage") or {}
+    price_per_image = estimate_fal_gpt_image_2_price_per_image({"width": width, "height": height})   # OpenAI list price, same table
+    params_meta = merge_request_settings(merge_asset_metadata({
+        "model": model_id,
+        "modelFamily": body.get("modelFamily", model_info.get("family", "")),
+        "model_label": model_info["label"],
+        "provider": "openai",
+        "provider_label": "OpenAI",
+        "imageSize": body.get("imageSize", "1K"),
+        "aspectRatio": body.get("aspectRatio", "1:1"),
+        "temperature": float(body.get("temperature", 1.0)),
+        "topP": float(body.get("topP", 0.95)),
+        "thinkingLevel": body.get("thinkingLevel", "Minimal"),
+        "useSearch": False,
+        "outputMode": body.get("outputMode", "images_only"),
+        "prompt": prompt,
+        "ref_count": len(ref_images),
+        "seedMode": "random",   # the Images API has no seed
+        "seedValue": 0,
+        "openaiUsage": {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")},
+        "openaiApiModel": OPENAI_GPT_IMAGE_2_API_MODEL,
+        "deliveredSize": f"{width}x{height}",
+    }, body), body)
+    return {
+        "ok": True,
+        "images": png_images,
+        "text": "",
+        "cost": round(price_per_image * len(png_images), 4),
+        "model_label": model_info["label"],
+        "params": params_meta,
+        "_input_ref_images": ref_images,
+    }
+
+
+def _openai_images_error(response) -> str:
+    try:
+        return str(response.json().get("error", {}).get("message") or f"HTTP {response.status_code}")
+    except Exception:
+        return f"HTTP {response.status_code}"
+
+
+def run_openai_gpt_image_2_generation_job(body: dict, api_key: str) -> dict:
+    """GPT Image 2 via OpenAI's Images API (POST /images/generations). Same options as the Fal route."""
+    body = normalize_generation_request(body)
+    model_id = body.get("model", OPENAI_GPT_IMAGE_2_TEXT_ID)
+    if model_id != OPENAI_GPT_IMAGE_2_TEXT_ID:
+        raise ValueError("Invalid model")
+    raw_prompt = body.get("prompt", "")
+    prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2) if isinstance(raw_prompt, dict) else str(raw_prompt).strip()
+    if not prompt:
+        raise ValueError("Please enter a prompt")
+    if body.get("refImages"):
+        raise ValueError("GPT Image 2 does not support reference images in the generation tab. Use GPT Image 2 Edit.")
+    num_images = max(1, min(int(body.get("numberOfImages", 1)), 4))
+    width, height = _openai_gpt_image_2_size(body.get("imageSize", "1K"), body.get("aspectRatio", "1:1"))
+    payload = {"model": OPENAI_GPT_IMAGE_2_API_MODEL, "prompt": prompt, "n": num_images, "size": f"{width}x{height}",
+               "quality": "high", "output_format": "png"}
+    try:
+        response = requests.post(f"{OPENAI_API_BASE}/images/generations", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                                 json=payload, timeout=300)
+    except requests.exceptions.Timeout as exc:
+        raise TimeoutError("Timeout: OpenAI GPT Image 2 generation took too long.") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Network error: {exc}") from exc
+    if response.status_code != 200:
+        raise RuntimeError(_openai_images_error(response))
+    return _openai_gpt_image_2_result(body, model_id, response.json(), width, height, prompt, [])
+
+
+def run_openai_gpt_image_2_edit_job(body: dict, api_key: str) -> dict:
+    """GPT Image 2 Edit via OpenAI's Images API (POST /images/edits, multipart, image[] up to 16)."""
+    body = normalize_generation_request(body)
+    model_id = body.get("model", OPENAI_GPT_IMAGE_2_EDIT_ID)
+    if model_id != OPENAI_GPT_IMAGE_2_EDIT_ID:
+        raise ValueError("Invalid model")
+    raw_prompt = body.get("prompt", "")
+    prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2) if isinstance(raw_prompt, dict) else str(raw_prompt).strip()
+    if not prompt:
+        raise ValueError("Please enter a prompt")
+    ref_images = normalize_ref_image_payloads(body.get("refImages", []), MODELS_INFO[model_id]["max_ref_images"])
+    if not ref_images:
+        raise ValueError("GPT Image 2 Edit needs at least one reference image.")
+    num_images = max(1, min(int(body.get("numberOfImages", 1)), 4))
+    width, height = _openai_gpt_image_2_size(body.get("imageSize", "1K"), body.get("aspectRatio", "1:1"))
+    files = []
+    for index, img in enumerate(ref_images):
+        mime = str(img.get("mime_type") or "image/png")
+        ext = "jpg" if "jpeg" in mime or "jpg" in mime else ("webp" if "webp" in mime else "png")
+        files.append(("image[]", (f"reference-{index + 1}.{ext}", base64.b64decode(img["data"]), mime)))
+    fields = {"model": OPENAI_GPT_IMAGE_2_API_MODEL, "prompt": prompt, "n": str(num_images), "size": f"{width}x{height}",
+              "quality": "high", "output_format": "png"}
+    try:
+        response = requests.post(f"{OPENAI_API_BASE}/images/edits", headers={"Authorization": f"Bearer {api_key}"},
+                                 data=fields, files=files, timeout=300)
+    except requests.exceptions.Timeout as exc:
+        raise TimeoutError("Timeout: OpenAI GPT Image 2 edit took too long.") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Network error: {exc}") from exc
+    if response.status_code != 200:
+        raise RuntimeError(_openai_images_error(response))
+    return _openai_gpt_image_2_result(body, model_id, response.json(), width, height, prompt, ref_images)
+
+
 def run_fal_gpt_image_2_edit_job(body: dict, api_key: str) -> dict:
     body = normalize_generation_request(body)
     model_id = body.get("model", FAL_GPT_IMAGE_2_EDIT_ID)
@@ -14112,6 +14275,16 @@ def run_generation_job(body: dict, config: dict) -> dict:
         if not byteplus_key:
             raise ValueError("BytePlus API key not configured. Go to Settings.")
         return run_byteplus_seedream_generation_job(payload, byteplus_key)
+
+    if provider == "openai":
+        openai_key = (config.get("openai_api_key", "") or "").strip()
+        if not openai_key:
+            raise ValueError("OpenAI API key not configured. Go to Settings.")
+        if family == "gpt-image-2-edit":
+            return run_openai_gpt_image_2_edit_job(payload, openai_key)
+        if family == "gpt-image-2":
+            return run_openai_gpt_image_2_generation_job(payload, openai_key)
+        raise ValueError("OpenAI serves GPT Image 2 only.")
 
     raise ValueError("Unsupported provider")
 

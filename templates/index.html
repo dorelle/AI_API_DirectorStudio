@@ -2548,7 +2548,7 @@ function estimateImageGenerationCost() {
     const total = perImage * numImages;
     return {
       text: `Est. ${formatEstimatedUsd(total)}`,
-      title: `Estimated using Fal GPT Image 2 high-quality pricing for ${dims.width}x${dims.height} x ${numImages}.`,
+      title: `Estimated using GPT Image 2 high-quality list pricing for ${dims.width}x${dims.height} x ${numImages} (same via Fal or OpenAI).`,
       state: "ready",
     };
   }
