@@ -2118,6 +2118,9 @@ def ensure_shots_columns(conn):
         "negative_prompt":  "TEXT NOT NULL DEFAULT ''",
         "elements":         "TEXT NOT NULL DEFAULT '[]'",
         "reference_assets": "TEXT NOT NULL DEFAULT '[]'",
+        # Task 10: attached style record and whether it applies
+        "style_id":         "INTEGER",
+        "style_enabled":    "INTEGER NOT NULL DEFAULT 1",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2245,6 +2248,19 @@ def init_studio_db():
             job_id TEXT NOT NULL DEFAULT '',
             poster_path TEXT NOT NULL DEFAULT '',
             completed_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS styles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            text TEXT NOT NULL DEFAULT '',
+            images TEXT NOT NULL DEFAULT '[]',
+            project_id INTEGER,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -2453,7 +2469,7 @@ SHOT_TEXT_FIELDS = (
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
 # Task 08: what each attached reference is for. Starting vocabulary; the user owns this list.
 REFERENCE_ROLES = ("unassigned", "edit_target", "character", "garment", "environment", "prop", "style")
-SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields")
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled")
 SHOT_SORT_STEP = 10
 
 
@@ -2469,7 +2485,22 @@ def shot_row_to_dict(row) -> dict:
     for key in SHOT_LIST_FIELDS:
         item[key] = [_reference_entry(value) for value in item[key] if _reference_entry(value)]
     item["chain_from_previous"] = bool(item.get("chain_from_previous"))
+    item["style_enabled"] = bool(item.get("style_enabled", 1)) if item.get("style_enabled") is not None else True
     return item
+
+
+def attach_styles(conn, shots: list[dict]) -> list[dict]:
+    """Adds `style` = the attached style record (or None) to each shot. Read-only helper."""
+    ids = sorted({int(shot["style_id"]) for shot in shots if shot.get("style_id")})
+    lookup = {}
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        for row in conn.execute(f"SELECT * FROM styles WHERE id IN ({marks})", ids).fetchall():
+            style = style_row_to_dict(row)
+            lookup[style["id"]] = style
+    for shot in shots:
+        shot["style"] = lookup.get(int(shot["style_id"])) if shot.get("style_id") else None
+    return shots
 
 
 def attach_take_summaries(conn, shots: list[dict]) -> list[dict]:
@@ -2509,7 +2540,7 @@ def fetch_shots(project_id) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM shots WHERE project_id = ? ORDER BY sort_order ASC, id ASC", (project_id,)
     ).fetchall()
-    shots = attach_take_summaries(conn, [shot_row_to_dict(row) for row in rows])
+    shots = attach_styles(conn, attach_take_summaries(conn, [shot_row_to_dict(row) for row in rows]))
     conn.close()
     return shots
 
@@ -2522,7 +2553,7 @@ def get_shot(shot_id) -> dict | None:
     init_studio_db()
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM shots WHERE id = ? LIMIT 1", (shot_id,)).fetchone()
-    shots = attach_take_summaries(conn, [shot_row_to_dict(row)]) if row else []
+    shots = attach_styles(conn, attach_take_summaries(conn, [shot_row_to_dict(row)])) if row else []
     conn.close()
     return shots[0] if shots else None
 
@@ -2660,6 +2691,17 @@ def _shot_updates_from_body(body: dict) -> dict:
         updates["status"] = status
     if "locked_fields" in body:
         updates["locked_fields"] = _normalize_shot_locked_fields(body.get("locked_fields"))
+    if "style_id" in body:
+        raw_style = body.get("style_id")
+        if raw_style in (None, "", 0, "0"):
+            updates["style_id"] = None
+        else:
+            style = get_style(raw_style)
+            if not style:
+                raise ValueError("Style not found")
+            updates["style_id"] = style["id"]
+    if "style_enabled" in body:
+        updates["style_enabled"] = 1 if body.get("style_enabled") else 0
     return updates
 
 
@@ -2767,6 +2809,125 @@ def reorder_shots(project_id, ordered_ids: list) -> list[dict]:
     conn.commit()
     conn.close()
     return fetch_shots(project["id"])
+
+
+# ---------------------------------------------------------------------------
+# Styles (Director Studio, Task 10). A reusable look: text and/or a board of images.
+# ---------------------------------------------------------------------------
+def style_row_to_dict(row) -> dict:
+    item = dict(row)
+    try:
+        images = json.loads(item.get("images") or "[]")
+    except json.JSONDecodeError:
+        images = []
+    item["images"] = [str(value).strip() for value in images if str(value or "").strip()] if isinstance(images, list) else []
+    item["archived"] = bool(item.get("archived"))
+    return item
+
+
+def _normalize_style_images(raw) -> str:
+    values = raw if isinstance(raw, list) else []
+    cleaned = []
+    for value in values:
+        text = str((value.get("ref") if isinstance(value, dict) else value) or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def fetch_styles(project_id=None, include_archived: bool = False) -> list[dict]:
+    init_studio_db()
+    conn = get_db_connection()
+    clauses, params = [], []
+    if project_id not in (None, ""):
+        clauses.append("(project_id IS NULL OR project_id = ?)")
+        params.append(int(project_id))
+    if not include_archived:
+        clauses.append("archived = 0")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = conn.execute(f"SELECT * FROM styles{where} ORDER BY name COLLATE NOCASE ASC, id ASC", params).fetchall()
+    conn.close()
+    return [style_row_to_dict(row) for row in rows]
+
+
+def get_style(style_id) -> dict | None:
+    try:
+        style_id = int(style_id)
+    except (TypeError, ValueError):
+        return None
+    init_studio_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM styles WHERE id = ? LIMIT 1", (style_id,)).fetchone()
+    conn.close()
+    return style_row_to_dict(row) if row else None
+
+
+def create_style(body: dict) -> dict:
+    name = sanitize_asset_meta_text(body.get("name", ""))
+    if not name:
+        raise ValueError("Style name is required")
+    project_id = body.get("project_id")
+    if project_id not in (None, ""):
+        if not get_project(project_id):
+            raise ValueError("Project not found")
+        project_id = int(project_id)
+    else:
+        project_id = None
+    init_studio_db()
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "INSERT INTO styles (name, text, images, project_id, archived, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+        (name, str(body.get("text") or "").strip(), _normalize_style_images(body.get("images")), project_id, utc_now_iso()),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return get_style(new_id)
+
+
+def update_style(style_id, body: dict) -> dict:
+    existing = get_style(style_id)
+    if not existing:
+        raise LookupError("Style not found")
+    updates = {}
+    if "name" in body:
+        name = sanitize_asset_meta_text(body.get("name", ""))
+        if not name:
+            raise ValueError("Style name is required")
+        updates["name"] = name
+    if "text" in body:
+        updates["text"] = str(body.get("text") or "").strip()
+    if "images" in body:
+        updates["images"] = _normalize_style_images(body.get("images"))
+    if "project_id" in body:
+        raw = body.get("project_id")
+        if raw in (None, ""):
+            updates["project_id"] = None
+        else:
+            if not get_project(raw):
+                raise ValueError("Project not found")
+            updates["project_id"] = int(raw)
+    if "archived" in body:
+        updates["archived"] = 1 if body.get("archived") else 0
+    if updates:
+        conn = get_db_connection()
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(f"UPDATE styles SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
+        conn.commit()
+        conn.close()
+    return get_style(existing["id"])
+
+
+def delete_style(style_id) -> bool:
+    existing = get_style(style_id)
+    if not existing:
+        return False
+    conn = get_db_connection()
+    conn.execute("UPDATE shots SET style_id = NULL WHERE style_id = ?", (existing["id"],))
+    conn.execute("DELETE FROM styles WHERE id = ?", (existing["id"],))
+    conn.commit()
+    conn.close()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -2949,6 +3110,12 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     for index, entry in enumerate(shot.get("reference_assets") or []):
         url = entry["ref"] if isinstance(entry, dict) else str(entry)
         reference_urls.append((url, f"reference-{index + 1}"))
+    # Task 10: an attached + enabled style appends after elements and reference assets.
+    # A reference asset with role 'style' above is untouched; both may be present.
+    style = shot.get("style") if (shot.get("style_id") and shot.get("style_enabled", True)) else None
+    if style:
+        for index, url in enumerate(style.get("images") or []):
+            reference_urls.append((str(url), f"style-{index + 1}"))
 
     first_frame = str(shot.get("first_frame") or "").strip()
     last_frame = str(shot.get("last_frame") or "").strip()
@@ -3013,6 +3180,9 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     }
     if not payload["prompt"]:
         raise ValueError("The shot has no prompt. Write one in the Prompt section first.")
+    if style and str(style.get("text") or "").strip():
+        # Append, never replace: the shot's own prompt first, the style after it.
+        payload["prompt"] = payload["prompt"] + "\n\n" + str(style["text"]).strip()
 
     durations = [int(x) for x in (model_info.get("durations") or []) if str(x).strip()]
     wanted = shot.get("duration_seconds")
@@ -8752,6 +8922,62 @@ def api_shots_delete(shot_id):
 # ---------------------------------------------------------------------------
 # API - Takes + render (Director Studio)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# API - Styles (Director Studio)
+# ---------------------------------------------------------------------------
+@app.route("/api/styles", methods=["GET"])
+@login_required
+def api_styles_list():
+    include_archived = str(request.args.get("archived", "") or "").strip().lower() in ("1", "true", "yes")
+    project_id = request.args.get("project_id")
+    return jsonify({"ok": True, "styles": fetch_styles(project_id=project_id or None, include_archived=include_archived)})
+
+
+@app.route("/api/styles", methods=["POST"])
+@login_required
+def api_styles_create():
+    body = request.get_json(silent=True) or {}
+    try:
+        style = create_style(body)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "style": style})
+
+
+@app.route("/api/styles/<int:style_id>", methods=["GET"])
+@login_required
+def api_styles_get(style_id):
+    style = get_style(style_id)
+    if not style:
+        return jsonify({"ok": False, "error": "Style not found"}), 404
+    return jsonify({"ok": True, "style": style})
+
+
+@app.route("/api/styles/<int:style_id>", methods=["PATCH"])
+@login_required
+def api_styles_update(style_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        style = update_style(style_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "style": style})
+
+
+@app.route("/api/styles/<int:style_id>", methods=["DELETE"])
+@login_required
+def api_styles_delete(style_id):
+    if not delete_style(style_id):
+        return jsonify({"ok": False, "error": "Style not found"}), 404
+    return jsonify({"ok": True})
+
+
 @app.route("/api/shots/<int:shot_id>/takes", methods=["GET"])
 @login_required
 def api_shot_takes(shot_id):

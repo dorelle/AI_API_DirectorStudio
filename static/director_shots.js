@@ -34,6 +34,7 @@
     // Ordered attachments: what the shot sends besides the prompt. Order = provider reference order.
     { key: "elements", label: "Elements", step: 3, list: "elements", addLabel: "+ Add elements", empty: "No talent attached yet. Add who is in the shot." },
     { key: "assets", label: "Assets", step: 4, list: "reference_assets", addLabel: "+ Add references", empty: "No references yet. Add plates, garments, props or style images." },
+    { key: "style", label: "Style", style: true },
     { key: "prompt", label: "Prompt", step: 5, hint: "The text the model receives.", fields: [
       { key: "prompt", label: "Prompt", type: "textarea", rows: 4, wide: true },
       { key: "negative_prompt", label: "Negative prompt", type: "textarea", wide: true },
@@ -61,6 +62,10 @@
   let videoModels = null;          // id -> info from /api/video-models-info
   let videoModelsPromise = null;
   const takesCache = {};           // shotId -> takes[]
+  let stylesCache = null;          // styles available to the active project
+  let stylesPromise = null;
+  let styleForm = null;            // { mode: "new"|"edit", id, name, text, images[], projectOnly } while the inline form is open
+  let stylePickingImages = false;  // reference picker is open for the style form, not the shot
   const activeRenders = {};        // shotId -> jobId being polled
 
   const $ = (id) => document.getElementById(id);
@@ -533,6 +538,7 @@
   function hasText(value) { return String(value ?? "").trim() !== ""; }
 
   function sectionHasContent(shot, group) {
+    if (group.style) return Boolean(shot.style_id);
     if (group.list) return (shot[group.list] || []).length > 0;
     if (group.takes) return Boolean(shot.takes && shot.takes.count);
     return (group.fields || []).some((field) => {
@@ -545,6 +551,7 @@
   }
 
   function sectionStateMarkup(shot, group) {
+    if (group.style) return shot.style_id ? `<span class="ds-section-check${shot.style_enabled ? "" : " is-off"}" title="${shot.style_enabled ? "Applied" : "Attached, switched off"}">${shot.style_enabled ? "\u2713" : "off"}</span>` : "";
     if (group.list) return `<span class="ds-section-count">${(shot[group.list] || []).length}</span>`;
     if (group.takes) return `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>`;
     return sectionHasContent(shot, group) ? `<span class="ds-section-check" title="Has content">\u2713</span>` : "";
@@ -683,7 +690,7 @@
       <details class="ds-section${group.list ? " ds-section-list" : ""}${filled ? " has-content" : " is-empty"}" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
         <summary>${group.step ? `<span class="ds-step">${group.step}</span>` : ""}${esc(group.label)}${sectionStateMarkup(shot, group)}</summary>
         ${hint}
-        ${group.list ? renderAttachmentList(shot, group) : (group.takes ? renderTakesSection(shot) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`)}
+        ${group.list ? renderAttachmentList(shot, group) : (group.takes ? renderTakesSection(shot) : (group.style ? renderStyleSection(shot) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`))}
       </details>`;
     }).join("");
     host.innerHTML = `
@@ -710,11 +717,179 @@
       button.addEventListener("click", () => toggleLock(shot.id, button.dataset.lock));
     });
     bindAttachmentLists(shot);
+    bindStyleSection(shot);
+    ensureStyles().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureVideoModels().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     $("dsRenderBtn")?.addEventListener("click", () => renderShot(shot.id));
     bindTakesSection(shot);
     loadTakes(shot.id);
+  }
+
+  // ---- style: one reusable look, attached per shot, on/off without detaching -----
+  function ensureStyles(force = false) {
+    if (stylesCache && !force) return Promise.resolve(false);
+    if (!stylesPromise || force) {
+      const query = project ? `?project_id=${encodeURIComponent(project.id)}` : "";
+      stylesPromise = api(`/api/styles${query}`)
+        .then((payload) => { stylesCache = payload.styles || []; return true; })
+        .catch(() => { stylesCache = stylesCache || []; return false; });
+    }
+    return stylesPromise;
+  }
+
+  function styleThumb(url) {
+    return `<span class="ds-style-thumb"><img src="${esc(url)}" alt="" draggable="false" title="${esc(String(url).split("/").pop())}"></span>`;
+  }
+
+  function renderStyleForm() {
+    const form = styleForm;
+    const images = (form.images || []).map((url, index) => `<span class="ds-style-thumb ds-style-thumb-edit">${styleThumb(url).replace('<span class="ds-style-thumb">', "").replace(/<\/span>$/, "")}<button type="button" class="ds-chip-remove" data-style-img-remove="${index}" title="Remove">&times;</button></span>`).join("");
+    return `<div class="ds-style-form" id="dsStyleForm">
+      <div class="ds-field"><div class="ds-field-label"><span>Name</span></div><input class="ds-field-input" id="dsStyleName" type="text" value="${esc(form.name || "")}" placeholder="e.g. Night Bus look" autocomplete="off"></div>
+      <div class="ds-field ds-field-wide"><div class="ds-field-label"><span>Text</span></div><textarea class="ds-field-input" id="dsStyleText" rows="3" placeholder="Grade, film stock, lighting register, photographic treatment.">${esc(form.text || "")}</textarea></div>
+      <div class="ds-field ds-field-wide"><div class="ds-field-label"><span>Look board</span></div>
+        <div class="ds-style-board">${images || '<span class="ds-chip-empty">No images yet.</span>'}</div>
+        <div class="ds-attach-actions"><button type="button" class="history-filter-toggle" id="dsStyleAddImages">+ Add images</button></div>
+      </div>
+      <label class="ds-field-check"><input type="checkbox" id="dsStyleProjectOnly" ${form.projectOnly ? "checked" : ""}> <span>Only for this project (unchecked = available to every project)</span></label>
+      <div class="ds-attach-actions">
+        <button type="button" class="history-filter-toggle ds-style-save" id="dsStyleSave">${form.mode === "edit" ? "Save style" : "Create style"}</button>
+        <button type="button" class="history-filter-toggle" id="dsStyleCancel">Cancel</button>
+        <span class="ds-shot-status-line" id="dsStyleFormError"></span>
+      </div>
+    </div>`;
+  }
+
+  function renderStyleSection(shot) {
+    const locked = Array.isArray(shot.locked_fields) && shot.locked_fields.includes("style_id");
+    const lock = `<button type="button" class="ds-lock${locked ? " is-locked" : ""}" data-lock="style_id" title="${locked ? "Locked by hand edit \u2014 click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${locked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>`;
+    if (styleForm) return `<div class="ds-style">${renderStyleForm()}</div>`;
+    const options = (stylesCache || []).map((style) => `<option value="${style.id}" ${String(style.id) === String(shot.style_id || "") ? "selected" : ""}>${esc(style.name)}${style.project_id ? "" : " \u00b7 all projects"}</option>`).join("");
+    const picker = `<select class="ds-field-input ds-style-select" id="dsStyleSelect"><option value="">${shot.style_id ? "Change style\u2026" : "Attach a style\u2026"}</option>${options}</select>`;
+    const style = shot.style;
+    if (!shot.style_id) {
+      return `<div class="ds-style">
+        <div class="ds-section-hint">No style attached. A style carries the look \u2014 grade, stock, lighting \u2014 and appends to the prompt when applied.</div>
+        <div class="ds-attach-actions">${picker}<button type="button" class="history-filter-toggle" id="dsStyleNew">+ New style</button>${lock}</div>
+      </div>`;
+    }
+    const enabled = Boolean(shot.style_enabled);
+    const missing = !style;
+    const board = style && style.images && style.images.length ? `<div class="ds-style-board">${style.images.map(styleThumb).join("")}</div>` : "";
+    return `<div class="ds-style ${enabled ? "is-on" : "is-off"}">
+      <div class="ds-style-card">
+        <div class="ds-style-head">
+          <label class="ds-style-toggle" title="${enabled ? "Applied to this shot's render. Click to switch off (stays attached)." : "Attached but switched off. Click to apply."}">
+            <input type="checkbox" id="dsStyleEnabled" ${enabled ? "checked" : ""}><span class="ds-style-switch"></span><span class="ds-style-state">${enabled ? "ON" : "OFF"}</span>
+          </label>
+          <span class="ds-style-name">${esc(missing ? `Style #${shot.style_id} (missing)` : style.name)}</span>
+          ${style && !style.project_id ? '<span class="ds-style-scope">all projects</span>' : ""}
+        </div>
+        ${style && style.text ? `<div class="ds-style-text">${esc(style.text)}</div>` : (missing ? "" : '<div class="ds-section-hint">No text on this style.</div>')}
+        ${board}
+        ${!enabled ? '<div class="ds-style-offnote">Switched off \u2014 not sent with the render. Still attached.</div>' : ""}
+      </div>
+      <div class="ds-attach-actions">
+        ${picker}
+        ${style ? '<button type="button" class="history-filter-toggle" id="dsStyleEdit">Edit</button>' : ""}
+        <button type="button" class="history-filter-toggle" id="dsStyleNew">+ New style</button>
+        <button type="button" class="history-filter-toggle ds-take-delete" id="dsStyleRemove">Remove</button>
+        ${lock}
+      </div>
+    </div>`;
+  }
+
+  async function saveStyleFields(shot, fields) {
+    const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
+    if (!locked.includes("style_id")) locked.push("style_id");
+    try {
+      const payload = await api(`/api/shots/${shot.id}`, { method: "PATCH", body: { ...fields, locked_fields: locked } });
+      const index = shots.findIndex((item) => item.id === payload.shot.id);
+      if (index >= 0) shots[index] = payload.shot;
+      renderList();
+      if (String(selectedId) === String(shot.id)) renderEditor();
+      flashSaved("Saved");
+    } catch (error) {
+      setStatusLine(error.message || "Could not save the style.", "error");
+    }
+  }
+
+  function bindStyleSection(shot) {
+    const host = $("dsShotEditor");
+    if (!host) return;
+    host.querySelector("#dsStyleSelect")?.addEventListener("change", (event) => {
+      const value = event.target.value;
+      if (!value) return;
+      saveStyleFields(shot, { style_id: Number(value), style_enabled: true });
+    });
+    host.querySelector("#dsStyleEnabled")?.addEventListener("change", (event) => {
+      saveStyleFields(shot, { style_enabled: Boolean(event.target.checked) });
+    });
+    host.querySelector("#dsStyleRemove")?.addEventListener("click", () => saveStyleFields(shot, { style_id: null }));
+    host.querySelector("#dsStyleNew")?.addEventListener("click", () => {
+      styleForm = { mode: "new", id: null, name: "", text: "", images: [], projectOnly: true };
+      renderEditor();
+    });
+    host.querySelector("#dsStyleEdit")?.addEventListener("click", () => {
+      const style = shot.style;
+      if (!style) return;
+      styleForm = { mode: "edit", id: style.id, name: style.name || "", text: style.text || "", images: (style.images || []).slice(), projectOnly: Boolean(style.project_id) };
+      renderEditor();
+    });
+    // inline form
+    host.querySelector("#dsStyleCancel")?.addEventListener("click", () => { styleForm = null; renderEditor(); });
+    host.querySelector("#dsStyleAddImages")?.addEventListener("click", () => {
+      syncStyleFormFromInputs();
+      stylePickingImages = true;
+      if (typeof window.openLovedPicker === "function") window.openLovedPicker("shot-refs");
+    });
+    host.querySelectorAll("[data-style-img-remove]").forEach((button) => {
+      button.addEventListener("click", () => {
+        syncStyleFormFromInputs();
+        styleForm.images.splice(Number(button.dataset.styleImgRemove), 1);
+        renderEditor();
+      });
+    });
+    host.querySelector("#dsStyleSave")?.addEventListener("click", async () => {
+      syncStyleFormFromInputs();
+      const errorEl = $("dsStyleFormError");
+      if (!styleForm.name.trim()) { if (errorEl) { errorEl.textContent = "Give the style a name."; errorEl.className = "ds-shot-status-line error"; } return; }
+      const body = { name: styleForm.name, text: styleForm.text, images: styleForm.images, project_id: styleForm.projectOnly && project ? project.id : null };
+      try {
+        const payload = styleForm.mode === "edit"
+          ? await api(`/api/styles/${styleForm.id}`, { method: "PATCH", body })
+          : await api("/api/styles", { method: "POST", body });
+        const mode = styleForm.mode;
+        styleForm = null;
+        await ensureStyles(true);
+        if (mode === "new") {
+          await saveStyleFields(shot, { style_id: payload.style.id, style_enabled: true });
+        } else {
+          // Edited: every shot using it shows the change on its next load; refresh this one now.
+          await loadShots();
+          if (String(selectedId) === String(shot.id)) renderEditor();
+        }
+        flashSaved(mode === "edit" ? "Style saved" : "Style created");
+      } catch (error) {
+        if (errorEl) { errorEl.textContent = error.message || "Could not save the style."; errorEl.className = "ds-shot-status-line error"; }
+      }
+    });
+  }
+
+  function syncStyleFormFromInputs() {
+    if (!styleForm) return;
+    styleForm.name = $("dsStyleName")?.value ?? styleForm.name;
+    styleForm.text = $("dsStyleText")?.value ?? styleForm.text;
+    const only = $("dsStyleProjectOnly");
+    if (only) styleForm.projectOnly = only.checked;
+  }
+
+  function onStyleImagesPicked(urls) {
+    stylePickingImages = false;
+    if (!styleForm) return;
+    (urls || []).forEach((url) => { const path = String(url || "").trim(); if (path && !styleForm.images.includes(path)) styleForm.images.push(path); });
+    renderEditor();
   }
 
   // ---- takes + render --------------------------------------------------------
@@ -1104,6 +1279,7 @@
   }
 
   function onReferencesPicked(urls, items) {
+    if (stylePickingImages) { onStyleImagesPicked(urls); return; }
     const shotId = pendingAttachShotId || selectedId;
     pendingAttachShotId = "";
     const shot = findShot(shotId);
@@ -1184,7 +1360,7 @@
     const next = detail && detail.project ? detail.project : (typeof window.getSelectedProjectRecord === "function" ? window.getSelectedProjectRecord() : null);
     const changed = (next && next.id) !== (project && project.id) || (next && next.type) !== (project && project.type);
     project = next || null;
-    if (changed) selectedId = "";
+    if (changed) { selectedId = ""; stylesCache = null; stylesPromise = null; styleForm = null; }
     applyProjectGate();
   }
 
