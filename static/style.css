@@ -10105,3 +10105,6 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .dormant-badge { font-size: 11px; font-weight: 500; color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; margin-left: 8px; vertical-align: middle; }
 .ds-take-file { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
 .ds-take.is-approved .ds-take-file { color: var(--green); }
+
+/* ---- key-aware model selectors: unconfigured providers dimmed, never removed ---- */
+optgroup.opt-needs-key, option.opt-needs-key { color: var(--text-dim); font-style: italic; }

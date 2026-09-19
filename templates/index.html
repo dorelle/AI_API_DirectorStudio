@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919b"></script>
-  <script defer src="/static/director_shots.js?v=20260919l"></script>
+  <script defer src="/static/director_shots.js?v=20260919m"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -2217,6 +2217,69 @@ const VIDEO_MODEL_FAMILIES = {{ video_model_families | tojson }};
 const VIDEO_PRICING = {{ video_pricing | tojson }};
 const GPT_IMAGE_2_DIMENSION_PRICING = {{ gpt_image_2_dimension_pricing | tojson }};
 const PROVIDER_LABELS = {{ provider_labels | tojson }};
+const PROVIDER_KEYS = {{ provider_keys | tojson }};   // provider -> {set, needs}; catalog is never filtered by this
+
+// ---- key-aware selector decoration: ready first, unconfigured dimmed + labeled, nothing removed ----
+function providerReady(providerKey) {
+  const state = PROVIDER_KEYS[providerKey];
+  return !state || !!state.set;   // unknown provider: don't claim it needs a key
+}
+function providerNeedsLabel(providerKey) {
+  return (PROVIDER_KEYS[providerKey] || {}).needs || ((PROVIDER_LABELS[providerKey] || providerKey) + " key");
+}
+function familyReady(familyInfo) {
+  const providers = Object.keys((familyInfo && familyInfo.providers) || {});
+  return !providers.length || providers.some(providerReady);
+}
+function familyNeedsLabel(familyInfo) {
+  const providers = Object.keys((familyInfo && familyInfo.providers) || {});
+  return Array.from(new Set(providers.map(providerNeedsLabel))).join(" or ");
+}
+function regroupFamilySelect(select, familiesMap) {
+  if (!select) return;
+  const current = select.value;
+  const entries = Array.from(select.options).map(opt => ({ value: opt.value, text: opt.dataset.baseLabel || opt.textContent }));
+  const ready = entries.filter(e => familyReady(familiesMap[e.value]));
+  const needs = entries.filter(e => !familyReady(familiesMap[e.value]));
+  select.innerHTML = "";
+  const addGroup = (label, list, dim) => {
+    if (!list.length) return;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    if (dim) group.className = "opt-needs-key";
+    list.forEach(e => {
+      const opt = document.createElement("option");
+      opt.value = e.value;
+      opt.dataset.baseLabel = e.text;
+      opt.textContent = dim ? `${e.text} \u00b7 needs ${familyNeedsLabel(familiesMap[e.value])}` : e.text;
+      if (dim) opt.className = "opt-needs-key";
+      group.appendChild(opt);
+    });
+    select.appendChild(group);
+  };
+  if (needs.length) { addGroup("Ready", ready, false); addGroup("Needs a key in Settings", needs, true); }
+  else ready.forEach(e => { const opt = document.createElement("option"); opt.value = e.value; opt.dataset.baseLabel = e.text; opt.textContent = e.text; select.appendChild(opt); });
+  if (current) select.value = current;
+  if (!select.value && select.options.length) select.selectedIndex = 0;
+}
+function appendProviderOptions(select, availableProviders, providerOrder) {
+  // ready providers first (in catalog order), then the unconfigured ones, dimmed and labeled
+  const order = (providerOrder || Object.keys(availableProviders)).filter(key => availableProviders[key]);
+  const ordered = order.filter(providerReady).concat(order.filter(key => !providerReady(key)));
+  ordered.forEach(providerKey => {
+    const opt = document.createElement("option");
+    opt.value = providerKey;
+    const ready = providerReady(providerKey);
+    opt.textContent = ready ? (PROVIDER_LABELS[providerKey] || providerKey) : `${PROVIDER_LABELS[providerKey] || providerKey} \u00b7 needs ${providerNeedsLabel(providerKey)}`;
+    if (!ready) opt.className = "opt-needs-key";
+    select.appendChild(opt);
+  });
+  return ordered;
+}
+function decorateModelSelectorsByKeys() {
+  regroupFamilySelect(document.getElementById("modelSelect"), MODEL_FAMILIES);
+  regroupFamilySelect(document.getElementById("modelFooterSelect"), MODEL_FAMILIES);
+}
 const INITIAL_GALLERY_HISTORY_ITEMS = {{ initial_gallery_history_items | tojson }};
 const UPSCALER_LABELS = { seedvr2: "SeedVR2" };
 const UPSCALE_PRESET_CUSTOM = "custom";
@@ -2941,13 +3004,7 @@ function syncProviderOptions(options = {}) {
   const availableProviders = familyInfo.providers || {};
   const preferredProvider = options.provider || select.value || familyInfo.default_provider || Object.keys(availableProviders)[0] || "gemini";
   select.innerHTML = "";
-  (familyInfo.provider_order || Object.keys(availableProviders)).forEach(providerKey => {
-    if (!availableProviders[providerKey]) return;
-    const opt = document.createElement("option");
-    opt.value = providerKey;
-    opt.textContent = PROVIDER_LABELS[providerKey] || providerKey;
-    select.appendChild(opt);
-  });
+  appendProviderOptions(select, availableProviders, familyInfo.provider_order);
   select.value = availableProviders[preferredProvider] ? preferredProvider : (familyInfo.default_provider || Object.keys(availableProviders)[0] || "gemini");
   select.disabled = Object.keys(availableProviders).length <= 1;
   return { familyId, familyInfo, provider: select.value };
@@ -2969,6 +3026,7 @@ function syncFooterModelProviderControls() {
       clone.value = opt.value;
       clone.textContent = opt.textContent;
       clone.disabled = opt.disabled;
+      clone.className = opt.className;
       providerFooter.appendChild(clone);
     });
     providerFooter.value = providerSource.value || providerFooter.value;
@@ -3048,13 +3106,7 @@ function syncVideoProviderOptions(options = {}) {
   const availableProviders = familyInfo.providers || {};
   const preferredProvider = options.provider || select.value || familyInfo.default_provider || Object.keys(availableProviders)[0] || "kling";
   select.innerHTML = "";
-  (familyInfo.provider_order || Object.keys(availableProviders)).forEach(providerKey => {
-    if (!availableProviders[providerKey]) return;
-    const opt = document.createElement("option");
-    opt.value = providerKey;
-    opt.textContent = PROVIDER_LABELS[providerKey] || providerKey;
-    select.appendChild(opt);
-  });
+  appendProviderOptions(select, availableProviders, familyInfo.provider_order);
   select.value = availableProviders[preferredProvider] ? preferredProvider : (familyInfo.default_provider || Object.keys(availableProviders)[0] || "kling");
   select.disabled = Object.keys(availableProviders).length <= 1;
   return { familyId, familyInfo, provider: select.value };
@@ -3128,6 +3180,7 @@ function syncVideoFooterControls(options = {}) {
       opt.textContent = info.label;
       modelSelect.appendChild(opt);
       });
+    regroupFamilySelect(modelSelect, VIDEO_MODEL_FAMILIES);
   }
   const desiredFamily = (options.familyId && options.familyId !== "seedvr-video") ? options.familyId : (modelSelect.value || "kling");
   modelSelect.value = desiredFamily;
@@ -15642,6 +15695,7 @@ async function applySavedVideoReuse() {
 }
 
 async function initGeneratorPage() {
+  decorateModelSelectorsByKeys();
   initArPicker();
   initSidebarArGrid();
   bindDraftPersistence();

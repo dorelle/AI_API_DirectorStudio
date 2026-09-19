@@ -874,6 +874,29 @@ PROVIDER_LABELS = {
     "luma": "Luma",
 }
 
+# Which Settings key each provider needs. The catalog is never filtered by this; the
+# selectors only order and label models with it.
+PROVIDER_KEY_FIELDS = {
+    "gemini":   ("api_key",          "Gemini API key"),
+    "fal":      ("fal_api_key",      "Fal key"),
+    "byteplus": ("byteplus_api_key", "BytePlus key"),
+    "kling":    ("kling_api_token",  "Kling token"),
+    "luma":     ("luma_api_key",     "Luma key"),
+    "runway":   ("runway_api_key",   "Runway key (no Settings card yet)"),
+}
+
+
+def provider_key_state(config: dict | None = None) -> dict:
+    """provider -> {set: bool, needs: label}. Read-only view of config."""
+    config = config if config is not None else load_config()
+    state = {}
+    for provider, (field, needs) in PROVIDER_KEY_FIELDS.items():
+        value = str(config.get(field) or "").strip()
+        if provider == "byteplus" and not value:
+            value = str(config.get("seedream_api_key") or "").strip()
+        state[provider] = {"set": bool(value), "needs": needs}
+    return state
+
 GEMINI_BASE_URL                 = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 FAL_BASE_URL                    = "https://fal.run"
 BYTEPLUS_BASE_URL               = "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations"
@@ -6737,6 +6760,7 @@ def index():
                            video_pricing=VIDEO_PRICING,
                            gpt_image_2_dimension_pricing={f"{width}x{height}": price for (width, height), price in FAL_GPT_IMAGE_2_HIGH_QUALITY_PRICING.items()},
                            provider_labels=PROVIDER_LABELS,
+                           provider_keys=provider_key_state(config),
                            initial_gallery_history_items=collect_generation_records(max_load=None),
                            has_key=has_key,
                            user=session["user"])
@@ -14618,6 +14642,13 @@ def api_models_info():
 @login_required
 def api_video_models_info():
     return jsonify(VIDEO_MODELS_INFO)
+
+
+@app.route("/api/provider-keys")
+@login_required
+def api_provider_keys():
+    """Which provider keys are set (booleans only; never the keys)."""
+    return jsonify({"ok": True, "providers": provider_key_state()})
 
 
 # ---------------------------------------------------------------------------

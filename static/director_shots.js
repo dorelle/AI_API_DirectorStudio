@@ -62,6 +62,7 @@
   let stripDragId = "";
   let stripPickShotId = "";
   let videoModels = null;          // id -> info from /api/video-models-info
+  let providerKeys = {};           // provider -> {set, needs} from /api/provider-keys (labels only, never filters)
   let videoModelsPromise = null;
   const takesCache = {};           // shotId -> takes[]
   let scenes = [];                 // the project's scenes, in sort_order
@@ -723,9 +724,16 @@
         const provider = String(info.provider_label || info.provider || "other");
         (groups[provider] = groups[provider] || []).push([id, info]);
       });
-      const options = Object.keys(groups).sort().map((provider) => `<optgroup label="${esc(provider)}">${groups[provider]
-        .sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])))
-        .map(([id, info]) => `<option value="${esc(id)}" ${id === current ? "selected" : ""}>${esc(info.label || id)}</option>`).join("")}</optgroup>`).join("");
+      const keyState = (provider) => providerKeys[String((groups[provider][0] || [])[1]?.provider || "")] || null;
+      const ready = (provider) => { const st = keyState(provider); return !st || !!st.set; };
+      const providerNames = Object.keys(groups).sort((a, b) => (ready(b) - ready(a)) || a.localeCompare(b));   // configured providers first
+      const options = providerNames.map((provider) => {
+        const ok = ready(provider);
+        const label = ok ? provider : `${provider} \u00b7 needs ${keyState(provider).needs}`;
+        return `<optgroup label="${esc(label)}"${ok ? "" : ' class="opt-needs-key"'}>${groups[provider]
+          .sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])))
+          .map(([id, info]) => `<option value="${esc(id)}" ${id === current ? "selected" : ""}${ok ? "" : ' class="opt-needs-key"'}>${esc(info.label || id)}</option>`).join("")}</optgroup>`;
+      }).join("");
       const unknown = current && !(videoModels && videoModels[current]) ? `<option value="${esc(current)}" selected>${esc(current)} (unknown)</option>` : "";
       control = `<select class="ds-field-input" data-field="${field.key}"><option value="" ${current ? "" : "selected"}>Generator's current video model</option>${unknown}${options}</select>`;
     } else if (field.type === "select") {
@@ -1519,9 +1527,15 @@
   function ensureVideoModels() {
     if (videoModels) return Promise.resolve(false);
     if (!videoModelsPromise) {
-      videoModelsPromise = fetch("/api/video-models-info", { credentials: "same-origin" })
-        .then((response) => response.json())
-        .then((payload) => { videoModels = payload && typeof payload === "object" ? payload : {}; return true; })
+      videoModelsPromise = Promise.all([
+        fetch("/api/video-models-info", { credentials: "same-origin" }).then((response) => response.json()),
+        fetch("/api/provider-keys", { credentials: "same-origin" }).then((response) => response.json()).catch(() => ({})),
+      ])
+        .then(([payload, keys]) => {
+          videoModels = payload && typeof payload === "object" ? payload : {};
+          providerKeys = keys && keys.providers && typeof keys.providers === "object" ? keys.providers : {};
+          return true;
+        })
         .catch(() => { videoModels = {}; return false; });
     }
     return videoModelsPromise;
