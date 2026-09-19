@@ -14417,10 +14417,10 @@ let elementsTarget = "refs";
 // Character metadata filters
 const EL_FILTER_DEFS = [
   { group: "gender", label: "Gender", options: [
-    { v: "female",      l: "ÃƒÂ¢Ã¢â€žÂ¢Ã¢â€šÂ¬ Female"     },
-    { v: "male",        l: "ÃƒÂ¢Ã¢â€žÂ¢Ã¢â‚¬Å¡ Male"       },
-    { v: "non-binary",  l: "ÃƒÂ¢Ã…Â Ã¢â‚¬Â¢ Non-binary" },
-    { v: "androgynous", l: "ÃƒÂ¢Ã¢â‚¬â€Ã‹â€  Androg."    },
+    { v: "female",      l: "♀ Female"     },
+    { v: "male",        l: "♂ Male"       },
+    { v: "non-binary",  l: "⚥ Non-binary" },
+    { v: "androgynous", l: "⚧ Androg."    },
   ]},
   { group: "age_group", label: "Age", options: [
     { v: "teen",        l: "Teen"        },
@@ -14474,9 +14474,9 @@ const EL_FILTER_DEFS = [
     { v: "silver",          l: "Silver",       dot: "#ccc"    },
     { v: "white",           l: "White",        dot: "#f0f0f0" },
     { v: "bald",            l: "Bald",         dot: "#e0c8b0" },
-    { v: "colored",         l: "ÃƒÂ¢Ã…â€œÃ‚Â¦ Colored",    dot: "linear-gradient(135deg,#f0f,#0ff)" },
+    { v: "colored",         l: "✦ Colored",    dot: "linear-gradient(135deg,#f0f,#0ff)" },
   ]},
-  { group: "hair_style", label: "Acconciatura", options: [
+  { group: "hair_style", label: "Hairstyle", options: [
     { v: "bald",           l: "Bald/Shaved"  },
     { v: "buzz_cut",       l: "Buzz Cut"     },
     { v: "short_crop",     l: "Short Crop"   },
@@ -14499,7 +14499,7 @@ const EL_FILTER_DEFS = [
     { v: "ponytail",       l: "Ponytail"     },
     { v: "updo",           l: "Updo"         },
     { v: "tied_back",      l: "Tied Back"    },
-    { v: "fantasy_styled", l: "ÃƒÂ¢Ã…â€œÃ‚Â¦ Fantasy"    },
+    { v: "fantasy_styled", l: "✦ Fantasy"    },
   ]},
   { group: "body_type", label: "Body Type", options: [
     { v: "slim",         l: "Slim"         },
@@ -14515,6 +14515,7 @@ const EL_FILTER_DEFS = [
   ]},
 ];
 
+let elFiltersOpen = (function () { try { return localStorage.getItem("nb_el_filters_open") === "1"; } catch (e) { return false; } })();
 let elFilters = {
   gender: new Set(), age_group: new Set(), ethnicity: new Set(),
   skin_tone: new Set(), hair_color: new Set(), hair_style: new Set(), body_type: new Set()
@@ -14549,6 +14550,26 @@ function renderElFiltersBar() {
   if (!isChars) return;
 
   bar.innerHTML = "";
+
+  // Collapsed by default: the grid is what the modal is for. Remembered per browser.
+  const activeCount = Object.values(elFilters).reduce((n, set) => n + set.size, 0);
+  const toggleRow = document.createElement("div");
+  toggleRow.className = "el-filter-toggle-row";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "el-filter-toggle" + (elFiltersOpen ? " is-open" : "");
+  toggle.textContent = `Filters${activeCount ? ` (${activeCount} active)` : ""}`;
+  toggle.onclick = () => { elFiltersOpen = !elFiltersOpen; try { localStorage.setItem("nb_el_filters_open", elFiltersOpen ? "1" : "0"); } catch (e) {} renderElFiltersBar(); };
+  toggleRow.appendChild(toggle);
+  if (activeCount && !elFiltersOpen) {
+    const summary = document.createElement("span");
+    summary.className = "el-filter-summary";
+    summary.textContent = Object.entries(elFilters).flatMap(([g, set]) => [...set]).join(", ");
+    toggleRow.appendChild(summary);
+  }
+  bar.appendChild(toggleRow);
+  bar.classList.toggle("is-collapsed", !elFiltersOpen);
+  if (!elFiltersOpen) return;
 
   EL_FILTER_DEFS.forEach(def => {
     const row = document.createElement("div");
@@ -14590,7 +14611,7 @@ function renderElFiltersBar() {
     clearRow.className = "el-filter-clear-row";
     const clearBtn = document.createElement("button");
     clearBtn.className = "el-filter-clear-btn";
-    clearBtn.textContent = "ÃƒÆ’Ã¢â‚¬â€ Cancella filtri";
+    clearBtn.textContent = "× Clear filters";
     clearBtn.onclick = elClearFilters;
     clearRow.appendChild(clearBtn);
     bar.appendChild(clearRow);
@@ -14644,6 +14665,29 @@ function closeElementsOnBg(e) {
   if (e.target === document.getElementById("elementsOverlay")) closeElements();
 }
 
+// Task 11b: the type a new element gets from the current category tab.
+function elIntakeTypeForCurrentCat() {
+  return elCurrentCat === "locations" ? "environment" : (elCurrentCat === "props" ? "prop" : "talent");
+}
+
+// Task 11b: drop an image anywhere on the Elements modal to start an intake for the current type.
+(function bindElementsDropIntake() {
+  const overlay = document.getElementById("elementsOverlay");
+  if (!overlay) return;
+  overlay.addEventListener("dragover", (e) => {
+    if ([...(e.dataTransfer?.types || [])].includes("Files")) { e.preventDefault(); overlay.classList.add("el-drop-active"); }
+  });
+  overlay.addEventListener("dragleave", (e) => { if (e.target === overlay) overlay.classList.remove("el-drop-active"); });
+  overlay.addEventListener("drop", (e) => {
+    overlay.classList.remove("el-drop-active");
+    const file = e.dataTransfer?.files && e.dataTransfer.files[0];
+    if (!file || !file.type.startsWith("image/")) return;
+    e.preventDefault();
+    openNewTalentWizard(elIntakeTypeForCurrentCat());
+    wizProcessFile(file);   // same path the wizard's own drop zone uses
+  });
+})();
+
 async function loadElements() {
   document.getElementById("elementsLoading").style.display = "flex";
   document.getElementById("elementsGrid").style.display    = "none";
@@ -14679,8 +14723,10 @@ async function loadElements() {
 
     document.getElementById("elementsLoading").style.display = "none";
 
+    // An empty category still gets the grid, so the "Create new" tile is there to start it.
     if (items.length === 0) {
       document.getElementById("elementsEmpty").style.display = "block";
+      renderElementsGrid([]);
       return;
     }
 
@@ -14715,8 +14761,9 @@ function renderElementsGrid(items) {
   // Card "Create new" (prima posizione)
   const createCard = document.createElement("div");
   createCard.className = "el-card el-card-create";
-  createCard.innerHTML = `<div class="el-card-plus">+</div><span>Create new</span>`;
-  createCard.onclick = () => openNewTalentWizard(elCurrentCat === "locations" ? "environment" : (elCurrentCat === "props" ? "prop" : "talent"));
+  const createLabel = { talent: "New talent", environment: "New environment", prop: "New prop" }[elIntakeTypeForCurrentCat()];
+  createCard.innerHTML = `<div class="el-card-plus">+</div><span>${createLabel}</span>`;
+  createCard.onclick = () => openNewTalentWizard(elIntakeTypeForCurrentCat());
   grid.appendChild(createCard);
 
   items.forEach(asset => {

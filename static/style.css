@@ -10014,3 +10014,22 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .ds-scene-env-thumb { width: 96px; height: 72px; object-fit: cover; border-radius: 8px; background: var(--surface3); flex-shrink: 0; }
 .ds-scene-env-body { display: grid; gap: 6px; min-width: 0; flex: 1 1 auto; }
 .ds-scene-shots { max-height: 260px; overflow-y: auto; padding: 0; }
+
+/* ---- Task 11b: Elements modal fixes ---- */
+.el-filter-toggle-row { display: flex; align-items: center; gap: 10px; }
+.el-filter-toggle {
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.el-filter-toggle::before { content: "\25B8"; margin-right: 6px; font-size: 10px; }
+.el-filter-toggle.is-open::before { content: "\25BE"; }
+.el-filter-toggle:hover { color: var(--text); border-color: var(--accent); }
+.el-filter-summary { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.el-filters-bar.is-collapsed { padding: 6px 12px; }
+#elementsOverlay.el-drop-active .modal-box { outline: 2px dashed var(--accent); outline-offset: -6px; }
