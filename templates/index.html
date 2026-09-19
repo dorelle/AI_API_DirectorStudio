@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919a"></script>
-  <script defer src="/static/director_shots.js?v=20260919h"></script>
+  <script defer src="/static/director_shots.js?v=20260919i"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -209,11 +209,13 @@
     const upscalePane = document.getElementById('promptPaneUpscale');
     const shotBtn = document.getElementById('promptModeShotBtn');
     const shotPane = document.getElementById('promptPaneShot');
+    const sceneBtn = document.getElementById('promptModeSceneBtn');
+    const scenePane = document.getElementById('promptPaneScene');
     if (!bar || !creationBtn || !videoBtn || !editBtn || !upscaleBtn || !creationPane || !videoPane || !editPane || !upscalePane) return;
-    const allowedModes = new Set(['creation', 'video', 'edit', 'upscale', 'shot']);
+    const allowedModes = new Set(['creation', 'video', 'edit', 'upscale', 'shot', 'scene']);
     let mode = allowedModes.has(bar.dataset.promptMode) ? bar.dataset.promptMode : 'creation';
-    // Shot mode exists only while a film project is active (Director Studio).
-    if (mode === 'shot' && (!shotBtn || shotBtn.style.display === 'none')) {
+    // Shot / Scene modes exist only while a film project is active (Director Studio).
+    if ((mode === 'shot' && (!shotBtn || shotBtn.style.display === 'none')) || (mode === 'scene' && (!sceneBtn || sceneBtn.style.display === 'none'))) {
       mode = 'creation';
       bar.dataset.promptMode = 'creation';
     }
@@ -223,6 +225,12 @@
       shotBtn.setAttribute('aria-pressed', shotActive ? 'true' : 'false');
     }
     if (shotPane) shotPane.style.display = shotActive ? '' : 'none';
+    const sceneActive = mode === 'scene';
+    if (sceneBtn) {
+      sceneBtn.classList.toggle('active', sceneActive);
+      sceneBtn.setAttribute('aria-pressed', sceneActive ? 'true' : 'false');
+    }
+    if (scenePane) scenePane.style.display = sceneActive ? '' : 'none';
     const creationActive = mode === 'creation';
     const videoActive = mode === 'video';
     const editActive = mode === 'edit';
@@ -259,7 +267,7 @@
     const bar = document.getElementById('promptBar');
     if (!bar) return;
     const previousMode = String(bar.dataset.promptMode || 'creation');
-    bar.dataset.promptMode = ['creation', 'video', 'edit', 'upscale', 'shot'].includes(mode) ? mode : 'creation';
+    bar.dataset.promptMode = ['creation', 'video', 'edit', 'upscale', 'shot', 'scene'].includes(mode) ? mode : 'creation';
     if (bar.dataset.promptMode === 'video' && previousMode !== 'video') {
       window.gallerySelectedVideoId = "";
     }
@@ -1087,6 +1095,12 @@
               </svg>
               <span>Shot</span>
             </button>
+            <button class="prompt-mode-tab" id="promptModeSceneBtn" type="button" onclick="setPromptMode('scene')" aria-pressed="false" style="display:none" title="Scene editor (film projects)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 6h16M4 12h16M4 18h10"></path>
+              </svg>
+              <span>Scene</span>
+            </button>
           </div>
           <div class="prompt-bar-header-actions" id="promptBarCreationControls">
             <div class="meta-left prompt-header-meta">
@@ -1682,6 +1696,9 @@
         <div class="prompt-pane" id="promptPaneShot" style="display:none">
           <div class="ds-shot-editor" id="dsShotEditor"></div>
         </div>
+        <div class="prompt-pane" id="promptPaneScene" style="display:none">
+          <div class="ds-shot-editor" id="dsSceneEditor"></div>
+        </div>
 
       </div>
     </div>
@@ -1691,6 +1708,7 @@
           <div class="history-sidebar-top-bar">
             <div class="history-sidebar-heading">
               <div class="ds-rail-toggle" id="dsRailToggle" style="display:none" role="tablist" aria-label="Right panel content">
+                <button type="button" data-rail="scenes" aria-pressed="false">Scenes</button>
                 <button type="button" data-rail="shots" aria-pressed="false">Shots</button>
                 <button type="button" data-rail="library" class="active" aria-pressed="true">Library</button>
               </div>
@@ -1812,6 +1830,7 @@
               </label>
             </div>
           </div>
+          <div class="ds-shot-list" id="dsSceneList" style="display:none"></div>
           <div class="ds-shot-list" id="dsShotList" style="display:none"></div>
           <div class="gallery-rail">
             <div class="gallery-rail-empty" id="galleryRailEmpty" style="display:none">Previous images will appear here.</div>

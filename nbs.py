@@ -2245,6 +2245,8 @@ def ensure_shots_columns(conn):
         # Task 10: attached style record and whether it applies
         "style_id":         "INTEGER",
         "style_enabled":    "INTEGER NOT NULL DEFAULT 1",
+        # Task 12: the scene a shot belongs to (the free-text `scene` stays as it is)
+        "scene_id":         "INTEGER",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2385,6 +2387,32 @@ def init_studio_db():
             project_id INTEGER,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            slug TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            brief TEXT NOT NULL DEFAULT '',
+            script TEXT NOT NULL DEFAULT '',
+            environment_id TEXT,
+            note TEXT NOT NULL DEFAULT '',
+            locked_fields TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            UNIQUE (project_id, slug)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scene_slug_counters (
+            project_id INTEGER PRIMARY KEY,
+            next_number INTEGER NOT NULL DEFAULT 1
         )
         """
     )
@@ -2593,7 +2621,7 @@ SHOT_TEXT_FIELDS = (
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
 # Task 08: what each attached reference is for. Starting vocabulary; the user owns this list.
 REFERENCE_ROLES = ("unassigned", "edit_target", "character", "garment", "environment", "prop", "style")
-SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled")
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id")
 SHOT_SORT_STEP = 10
 
 
@@ -2826,6 +2854,15 @@ def _shot_updates_from_body(body: dict) -> dict:
             updates["style_id"] = style["id"]
     if "style_enabled" in body:
         updates["style_enabled"] = 1 if body.get("style_enabled") else 0
+    if "scene_id" in body:
+        raw_scene = body.get("scene_id")
+        if raw_scene in (None, "", 0, "0"):
+            updates["scene_id"] = None
+        else:
+            scene = get_scene(raw_scene)
+            if not scene:
+                raise ValueError("Scene not found")
+            updates["scene_id"] = scene["id"]
     return updates
 
 
@@ -2906,6 +2943,195 @@ def delete_shot(shot_id) -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Scenes (Director Studio, Task 12). Same rules as shots: identity in slug, order in
+# sort_order, insertion free. Shots point at a scene through shots.scene_id.
+# ---------------------------------------------------------------------------
+SCENE_TEXT_FIELDS = ("name", "brief", "script", "note", "environment_id")
+SCENE_EDITABLE_FIELDS = SCENE_TEXT_FIELDS + ("locked_fields",)
+
+
+def scene_row_to_dict(row) -> dict:
+    item = dict(row)
+    try:
+        locked = json.loads(item.get("locked_fields") or "[]")
+    except json.JSONDecodeError:
+        locked = []
+    item["locked_fields"] = locked if isinstance(locked, list) else []
+    item["environment_id"] = str(item.get("environment_id") or "") or None
+    return item
+
+
+def attach_scene_shot_counts(conn, scenes: list[dict]) -> list[dict]:
+    if not scenes:
+        return scenes
+    ids = [scene["id"] for scene in scenes]
+    marks = ",".join("?" for _ in ids)
+    counts = {row["scene_id"]: row["n"] for row in conn.execute(
+        f"SELECT scene_id, COUNT(*) AS n FROM shots WHERE scene_id IN ({marks}) GROUP BY scene_id", ids).fetchall()}
+    for scene in scenes:
+        scene["shot_count"] = int(counts.get(scene["id"], 0))
+    return scenes
+
+
+def fetch_scenes(project_id) -> list[dict]:
+    try:
+        project_id = int(project_id)
+    except (TypeError, ValueError):
+        return []
+    init_studio_db()
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM scenes WHERE project_id = ? ORDER BY sort_order ASC, id ASC", (project_id,)).fetchall()
+    scenes = attach_scene_shot_counts(conn, [scene_row_to_dict(row) for row in rows])
+    conn.close()
+    return scenes
+
+
+def get_scene(scene_id) -> dict | None:
+    try:
+        scene_id = int(scene_id)
+    except (TypeError, ValueError):
+        return None
+    init_studio_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM scenes WHERE id = ? LIMIT 1", (scene_id,)).fetchone()
+    scenes = attach_scene_shot_counts(conn, [scene_row_to_dict(row)]) if row else []
+    conn.close()
+    return scenes[0] if scenes else None
+
+
+def next_scene_slug(conn, project: dict) -> str:
+    """<ProjectStem>_SC### from a per-project counter that only ever increments."""
+    row = conn.execute("SELECT next_number FROM scene_slug_counters WHERE project_id = ?", (project["id"],)).fetchone()
+    number = int(row["next_number"]) if row else 1
+    conn.execute(
+        "INSERT INTO scene_slug_counters (project_id, next_number) VALUES (?, ?) "
+        "ON CONFLICT(project_id) DO UPDATE SET next_number = excluded.next_number",
+        (project["id"], number + 1),
+    )
+    stem = sanitize_asset_filename_stem(project.get("name", ""), fallback="project")
+    return f"{stem}_SC{number:03d}"
+
+
+def _scene_updates_from_body(body: dict) -> dict:
+    updates = {}
+    for key in SCENE_TEXT_FIELDS:
+        if key in body:
+            value = body.get(key)
+            if key == "environment_id":
+                updates[key] = str(value or "").strip() or None
+            elif key == "script":
+                updates[key] = str(value or "")            # multi-line, kept as typed
+            else:
+                updates[key] = str(value or "").strip()
+    if "locked_fields" in body:
+        values = body.get("locked_fields") if isinstance(body.get("locked_fields"), list) else []
+        cleaned = []
+        for value in values:
+            text = str(value or "").strip()
+            if text in SCENE_TEXT_FIELDS and text not in cleaned:
+                cleaned.append(text)
+        updates["locked_fields"] = json.dumps(cleaned)
+    return updates
+
+
+def _compact_scene_sort_orders(conn, project_id: int) -> None:
+    rows = conn.execute("SELECT id FROM scenes WHERE project_id = ? ORDER BY sort_order ASC, id ASC", (project_id,)).fetchall()
+    for index, row in enumerate(rows):
+        conn.execute("UPDATE scenes SET sort_order = ? WHERE id = ?", ((index + 1) * SHOT_SORT_STEP, row["id"]))
+
+
+def create_scene(body: dict) -> dict:
+    project = get_project(body.get("project_id"))
+    if not project:
+        raise LookupError("Project not found")
+    if project.get("type") != "film":
+        raise ValueError("Scenes belong to film projects")
+    updates = _scene_updates_from_body(body)
+    init_studio_db()
+    conn = get_db_connection()
+    after_id = body.get("after_id")
+    if after_id not in (None, ""):
+        prev_row = conn.execute("SELECT id, sort_order FROM scenes WHERE id = ? AND project_id = ?", (int(after_id), project["id"])).fetchone()
+        if not prev_row:
+            conn.close()
+            raise LookupError("Scene to insert after was not found")
+        next_row = conn.execute(
+            "SELECT id, sort_order FROM scenes WHERE project_id = ? AND (sort_order > ? OR (sort_order = ? AND id > ?)) ORDER BY sort_order ASC, id ASC LIMIT 1",
+            (project["id"], prev_row["sort_order"], prev_row["sort_order"], prev_row["id"]),
+        ).fetchone()
+        if next_row is None:
+            sort_order = int(prev_row["sort_order"]) + SHOT_SORT_STEP
+        elif int(next_row["sort_order"]) - int(prev_row["sort_order"]) >= 2:
+            sort_order = (int(prev_row["sort_order"]) + int(next_row["sort_order"])) // 2
+        else:
+            _compact_scene_sort_orders(conn, project["id"])
+            prev_sort = int(conn.execute("SELECT sort_order FROM scenes WHERE id = ?", (prev_row["id"],)).fetchone()["sort_order"])
+            sort_order = prev_sort + SHOT_SORT_STEP // 2
+    else:
+        last = conn.execute("SELECT MAX(sort_order) AS m FROM scenes WHERE project_id = ?", (project["id"],)).fetchone()
+        sort_order = (int(last["m"]) if last and last["m"] is not None else 0) + SHOT_SORT_STEP
+    slug = next_scene_slug(conn, project)
+    if not updates.get("name"):
+        updates["name"] = slug
+    columns = ["project_id", "slug", "sort_order", "created_at"] + list(updates.keys())
+    values = [project["id"], slug, sort_order, utc_now_iso()] + list(updates.values())
+    cursor = conn.execute(f"INSERT INTO scenes ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", values)
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return get_scene(new_id)
+
+
+def update_scene(scene_id, body: dict) -> dict:
+    existing = get_scene(scene_id)
+    if not existing:
+        raise LookupError("Scene not found")
+    updates = _scene_updates_from_body(body)
+    # slug, sort_order, project_id are never writable here
+    if updates:
+        conn = get_db_connection()
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(f"UPDATE scenes SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
+        conn.commit()
+        conn.close()
+    return get_scene(existing["id"])
+
+
+def delete_scene(scene_id) -> dict | None:
+    """Deletes the scene; its shots stay and are detached (scene_id -> NULL)."""
+    existing = get_scene(scene_id)
+    if not existing:
+        return None
+    conn = get_db_connection()
+    detached = conn.execute("SELECT COUNT(*) AS n FROM shots WHERE scene_id = ?", (existing["id"],)).fetchone()["n"]
+    conn.execute("UPDATE shots SET scene_id = NULL WHERE scene_id = ?", (existing["id"],))
+    conn.execute("DELETE FROM scenes WHERE id = ?", (existing["id"],))
+    conn.commit()
+    conn.close()
+    return {"deleted": existing["slug"], "detached_shots": int(detached)}
+
+
+def reorder_scenes(project_id, ordered_ids: list) -> list[dict]:
+    """Rewrite scene sort_order from the given id order. Slugs are untouched."""
+    project = get_project(project_id)
+    if not project:
+        raise LookupError("Project not found")
+    try:
+        ordered_ids = [int(value) for value in ordered_ids]
+    except (TypeError, ValueError):
+        raise ValueError("ids must be integers")
+    current_ids = [scene["id"] for scene in fetch_scenes(project["id"])]
+    if sorted(ordered_ids) != sorted(current_ids):
+        raise ValueError("ids must contain every scene of the project exactly once")
+    conn = get_db_connection()
+    for index, scene_id in enumerate(ordered_ids):
+        conn.execute("UPDATE scenes SET sort_order = ? WHERE id = ?", ((index + 1) * SHOT_SORT_STEP, scene_id))
+    conn.commit()
+    conn.close()
+    return fetch_scenes(project["id"])
 
 
 def reorder_shots(project_id, ordered_ids: list) -> list[dict]:
@@ -8972,6 +9198,77 @@ def api_projects_update(project_id):
 # ---------------------------------------------------------------------------
 # API - Shots (Director Studio)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# API - Scenes (Director Studio)
+# ---------------------------------------------------------------------------
+@app.route("/api/scenes", methods=["GET"])
+@login_required
+def api_scenes_list():
+    project = get_project(request.args.get("project_id"))
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    return jsonify({"ok": True, "scenes": fetch_scenes(project["id"])})
+
+
+@app.route("/api/scenes", methods=["POST"])
+@login_required
+def api_scenes_create():
+    body = request.get_json(silent=True) or {}
+    try:
+        scene = create_scene(body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "scene": scene})
+
+
+@app.route("/api/scenes/reorder", methods=["POST"])
+@login_required
+def api_scenes_reorder():
+    body = request.get_json(silent=True) or {}
+    try:
+        scenes = reorder_scenes(body.get("project_id"), body.get("ids") or [])
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "scenes": scenes})
+
+
+@app.route("/api/scenes/<int:scene_id>", methods=["GET"])
+@login_required
+def api_scenes_get(scene_id):
+    scene = get_scene(scene_id)
+    if not scene:
+        return jsonify({"ok": False, "error": "Scene not found"}), 404
+    return jsonify({"ok": True, "scene": scene})
+
+
+@app.route("/api/scenes/<int:scene_id>", methods=["PATCH"])
+@login_required
+def api_scenes_update(scene_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        scene = update_scene(scene_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "scene": scene})
+
+
+@app.route("/api/scenes/<int:scene_id>", methods=["DELETE"])
+@login_required
+def api_scenes_delete(scene_id):
+    result = delete_scene(scene_id)
+    if result is None:
+        return jsonify({"ok": False, "error": "Scene not found"}), 404
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/api/shots", methods=["GET"])
 @login_required
 def api_shots_list():

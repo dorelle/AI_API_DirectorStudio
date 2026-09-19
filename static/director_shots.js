@@ -5,6 +5,7 @@
     rail: "ds_rail_mode",
     sections: "ds_shot_sections",
     selected: "ds_selected_shot",
+    selectedScene: "ds_selected_scene",
   };
   const REFERENCE_ROLES = ["unassigned", "edit_target", "character", "garment", "environment", "prop", "style"];
   const ROLE_LABELS = { unassigned: "unassigned", edit_target: "edit target", character: "character", garment: "garment", environment: "environment", prop: "prop", style: "style" };
@@ -62,6 +63,10 @@
   let videoModels = null;          // id -> info from /api/video-models-info
   let videoModelsPromise = null;
   const takesCache = {};           // shotId -> takes[]
+  let scenes = [];                 // the project's scenes, in sort_order
+  let selectedSceneId = "";        // "" = all shots
+  let sceneDragId = "";
+  let environmentCatalog = null;   // environment elements for the scene editor
   let stylesCache = null;          // styles available to the active project
   let stylesPromise = null;
   let styleForm = null;            // { mode: "new"|"edit", id, name, text, images[], projectOnly } while the inline form is open
@@ -107,30 +112,38 @@
     const film = isFilm();
     const toggle = $("dsRailToggle");
     const pill = $("promptModeShotBtn");
+    const scenePill = $("promptModeSceneBtn");
     if (toggle) toggle.style.display = film ? "" : "none";
     if (pill) pill.style.display = film ? "" : "none";
+    if (scenePill) scenePill.style.display = film ? "" : "none";
     syncStrip();
     if (!film) {
       shots = [];
+      scenes = [];
       selectedId = "";
+      selectedSceneId = "";
       setRailMode("library", { persist: false });
       const bar = $("promptBar");
-      if (bar && bar.dataset.promptMode === "shot" && typeof window.setPromptMode === "function") {
+      if (bar && (bar.dataset.promptMode === "shot" || bar.dataset.promptMode === "scene") && typeof window.setPromptMode === "function") {
         window.setPromptMode("creation");
       }
       renderEditor();
+      renderSceneEditor();
       return;
     }
-    setRailMode(readStorage(STORAGE_KEYS.rail, "library") === "shots" ? "shots" : "library", { persist: false });
+    const remembered = readStorage(STORAGE_KEYS.rail, "library");
+    setRailMode(remembered === "shots" || remembered === "scenes" ? remembered : "library", { persist: false });
     loadShots();
   }
 
   // ---- right panel -------------------------------------------------------
   function setRailMode(mode, { persist = true } = {}) {
-    railMode = mode === "shots" && isFilm() ? "shots" : "library";
-    const shotsOn = railMode === "shots";
+    railMode = (mode === "shots" || mode === "scenes") && isFilm() ? mode : "library";
+    const shotsOn = railMode !== "library";   // Scenes and Shots both replace the Library block
     const list = $("dsShotList");
-    if (list) list.style.display = shotsOn ? "" : "none";
+    if (list) list.style.display = railMode === "shots" ? "" : "none";
+    const sceneList = $("dsSceneList");
+    if (sceneList) sceneList.style.display = railMode === "scenes" ? "" : "none";
     // Library = everything that is there today; hidden as a block while Shots is showing.
     ["galleryToolbar"].forEach((id) => { const el = $(id); if (el) el.style.display = shotsOn ? "none" : ""; });
     document.querySelectorAll("#galleryHistorySidebar .gallery-rail").forEach((el) => { el.style.display = shotsOn ? "none" : ""; });
@@ -149,24 +162,44 @@
     }
   }
 
+  async function loadScenes() {
+    if (!isFilm()) return;
+    try {
+      const payload = await api(`/api/scenes?project_id=${encodeURIComponent(project.id)}`);
+      scenes = Array.isArray(payload.scenes) ? payload.scenes : [];
+      const remembered = readStorage(STORAGE_KEYS.selectedScene + ":" + project.id, "");
+      if (!findScene(selectedSceneId)) selectedSceneId = findScene(remembered) ? remembered : "";
+    } catch (error) {
+      scenes = [];
+    }
+  }
+
   async function loadShots() {
     if (!isFilm()) return;
     try {
+      await loadScenes();
       const payload = await api(`/api/shots?project_id=${encodeURIComponent(project.id)}`);
       shots = Array.isArray(payload.shots) ? payload.shots : [];
       const remembered = readStorage(STORAGE_KEYS.selected + ":" + project.id, "");
       if (!findShot(selectedId)) selectedId = findShot(remembered) ? remembered : "";
       renderList();
       renderEditor();
+      renderSceneList();
+      renderSceneEditor();
     } catch (error) {
       setStatusLine(error.message || "Could not load shots.", "error");
     }
   }
 
-  function renderList() {
-    const list = $("dsShotList");
-    if (!list) return;
-    const rows = shots.map((shot) => `
+  const findScene = (id) => scenes.find((scene) => String(scene.id) === String(id)) || null;
+  const sceneOf = (shot) => (shot && shot.scene_id ? findScene(shot.scene_id) : null);
+  // The strip and the filtered list show this subset; ordering is always the project's.
+  function visibleShots() {
+    return selectedSceneId ? shots.filter((shot) => String(shot.scene_id || "") === String(selectedSceneId)) : shots;
+  }
+
+  function shotRowMarkup(shot) {
+    return `
       <div class="ds-shot-row${String(shot.id) === String(selectedId) ? " is-selected" : ""}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}${shot.takes && shot.takes.approved ? " \u00b7 approved" : ""}">
         <span class="ds-shot-status" data-status="${esc(listStatus(shot))}" aria-label="${esc(listStatus(shot))}"></span>
         <span class="ds-shot-slug">${esc(shot.slug)}</span>
@@ -175,21 +208,47 @@
           <button type="button" class="ds-shot-mini" data-action="insert" title="Insert a shot after this one">+</button>
           <button type="button" class="ds-shot-mini ds-shot-mini-danger" data-action="delete" title="Delete this shot">&times;</button>
         </span>
-      </div>`).join("");
+      </div>`;
+  }
+
+  function renderList() {
+    const list = $("dsShotList");
+    if (!list) return;
+    const selectedScene = findScene(selectedSceneId);
+    let rows = "";
+    if (selectedScene) {
+      const mine = visibleShots();
+      rows = `<div class="ds-group-head"><span class="ds-shot-slug">${esc(selectedScene.slug)}</span><span class="ds-group-name">${esc(selectedScene.name || "")}</span><button type="button" class="ds-shot-mini" id="dsShowAllShots" title="Show every shot">All</button></div>`
+        + (mine.map(shotRowMarkup).join("") || '<div class="ds-shot-empty">No shots in this scene yet.</div>');
+    } else {
+      // Grouped under their scene, in project order; unassigned shots in their own group at the end.
+      const groups = scenes.map((scene) => ({ scene, items: shots.filter((shot) => String(shot.scene_id || "") === String(scene.id)) }));
+      const unassigned = shots.filter((shot) => !shot.scene_id || !findScene(shot.scene_id));
+      rows = groups.map(({ scene, items }) => `<div class="ds-group-head" data-scene="${scene.id}" title="Open scene"><span class="ds-shot-slug">${esc(scene.slug)}</span><span class="ds-group-name">${esc(scene.name || "")}</span><span class="ds-shot-count">${items.length}</span></div>${items.map(shotRowMarkup).join("")}`).join("")
+        + (unassigned.length || !scenes.length ? `<div class="ds-group-head is-unassigned"><span class="ds-group-name">${scenes.length ? "Unassigned" : "Shots"}</span><span class="ds-shot-count">${unassigned.length}</span></div>${unassigned.map(shotRowMarkup).join("")}` : "");
+      if (!shots.length) rows += '<div class="ds-shot-empty">No shots yet. Add the first one.</div>';
+    }
     list.innerHTML = `
       <div class="ds-shot-list-head">
-        <span class="ds-shot-list-title">Shots <span class="ds-shot-count">${shots.length}</span></span>
+        <span class="ds-shot-list-title">Shots <span class="ds-shot-count">${selectedScene ? visibleShots().length + "/" + shots.length : shots.length}</span></span>
         <button type="button" class="history-filter-toggle" id="dsAddShotBtn">+ Add shot</button>
       </div>
       <div class="ds-shot-status-line" id="dsShotStatusLine"></div>
-      <div class="ds-shot-rows" id="dsShotRows">${rows || '<div class="ds-shot-empty">No shots yet. Add the first one.</div>'}</div>`;
-    $("dsAddShotBtn")?.addEventListener("click", () => createShot());
+      <div class="ds-shot-rows" id="dsShotRows">${rows}</div>`;
+    $("dsAddShotBtn")?.addEventListener("click", () => createShot(selectedScene ? { scene_id: selectedScene.id, after_id: lastShotIdInScene(selectedScene.id) } : {}));
+    $("dsShowAllShots")?.addEventListener("click", () => selectScene(""));
+    list.querySelectorAll(".ds-group-head[data-scene]").forEach((head) => head.addEventListener("click", () => selectScene(head.dataset.scene, { openEditor: true })));
     bindRowEvents();
     renderStrip();
   }
 
-  function bindRowEvents() {
-    const container = $("dsShotRows");
+  function lastShotIdInScene(sceneId) {
+    const mine = shots.filter((shot) => String(shot.scene_id || "") === String(sceneId));
+    return mine.length ? mine[mine.length - 1].id : undefined;
+  }
+
+  function bindRowEvents(containerId = "dsShotRows") {
+    const container = $(containerId);
     if (!container) return;
     container.querySelectorAll(".ds-shot-row").forEach((row) => {
       const id = row.dataset.id;
@@ -305,6 +364,8 @@
   function syncStrip() {
     const strip = $("dsShotStrip");
     if (!strip) return;
+    const bar = $("promptBar");
+    if (bar && bar.dataset.promptMode === "scene") renderSceneEditor();
     const show = isFilm() && isShotMode();
     strip.style.display = show ? "" : "none";
     if (show) {
@@ -347,7 +408,9 @@
   function renderStrip() {
     const strip = $("dsShotStrip");
     if (!strip || strip.style.display === "none") return;
-    const cards = shots.map((shot, index) => {
+    const scene = findScene(selectedSceneId);
+    const cards = visibleShots().map((shot) => {
+      const index = shots.indexOf(shot);
       const url = frameUrl(shot);
       const visual = shotVisual(shot);
       const hasVisual = visual.kind !== "none";
@@ -378,10 +441,11 @@
     }).join("");
     strip.innerHTML = `
       <div class="ds-strip-head">
-        <span class="ds-strip-title">Sequence <span class="ds-shot-count">${shots.length}</span> \u00b7 ${esc(project ? project.name : "")}</span>
+        <span class="ds-strip-title">${scene ? `${esc(scene.slug)} \u00b7 ${esc(scene.name || "")} <span class="ds-shot-count">${visibleShots().length}</span> <button type="button" class="ds-shot-mini" id="dsStripAllShots" title="Show the whole film">All shots</button>` : `Sequence <span class="ds-shot-count">${shots.length}</span> \u00b7 ${esc(project ? project.name : "")}`}</span>
         <span class="ds-strip-hint">Drag cards to reorder \u00b7 drop a gallery image on a card to set its first frame</span>
       </div>
-      <div class="ds-strip-track" id="dsStripTrack">${cards || '<div class="ds-strip-empty">No shots yet. Add one in the Shots panel on the right.</div>'}</div>`;
+      <div class="ds-strip-track" id="dsStripTrack">${cards || `<div class="ds-strip-empty">${scene ? "No shots in this scene yet." : "No shots yet. Add one in the Shots panel on the right."}</div>`}</div>`;
+    $("dsStripAllShots")?.addEventListener("click", () => selectScene(""));
     bindCardEvents();
   }
 
@@ -702,6 +766,10 @@
           <button type="button" class="ds-lock${sceneLocked ? " is-locked" : ""}" data-lock="scene" title="${sceneLocked ? "Locked by hand edit — click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${sceneLocked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>
         </div>
         <span class="ds-editor-order">#${shots.findIndex((item) => item.id === shot.id) + 1} of ${shots.length}</span>
+        <span class="ds-field ds-field-inline ds-shot-scene-pick${Array.isArray(shot.locked_fields) && shot.locked_fields.includes("scene_id") ? " is-locked" : ""}" data-field-wrap="scene_id" title="The scene this shot belongs to">
+          <select class="ds-field-input" data-field="scene_id"><option value="">No scene</option>${scenes.map((scene) => `<option value="${scene.id}" ${String(scene.id) === String(shot.scene_id || "") ? "selected" : ""}>${esc(scene.slug)} \u00b7 ${esc(scene.name || "")}</option>`).join("")}</select>
+          ${sceneOf(shot) ? `<button type="button" class="ds-shot-mini" id="dsOpenShotScene" title="Open this scene">Open</button>` : ""}
+        </span>
         <span class="ds-editor-saved" id="dsEditorSaved"></span>
         ${readinessMarkup(shot)}
       </div>
@@ -722,6 +790,7 @@
     ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureVideoModels().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     $("dsRenderBtn")?.addEventListener("click", () => renderShot(shot.id));
+    $("dsOpenShotScene")?.addEventListener("click", () => selectScene(shot.scene_id, { openEditor: true }));
     bindTakesSection(shot);
     loadTakes(shot.id);
   }
@@ -956,6 +1025,232 @@
     }
     (urls || []).forEach((url) => { const path = String(url || "").trim(); if (path && !styleForm.images.includes(path)) styleForm.images.push(path); });
     renderEditor();
+  }
+
+  // ---- scenes: list (right panel) + editor (Scene pill) ------------------------
+  function selectScene(id, { openEditor = false } = {}) {
+    selectedSceneId = findScene(id) ? String(id) : "";
+    if (project) writeStorage(STORAGE_KEYS.selectedScene + ":" + project.id, selectedSceneId);
+    renderSceneList();
+    renderList();
+    renderSceneEditor();
+    if (openEditor && selectedSceneId && typeof window.setPromptMode === "function") window.setPromptMode("scene");
+  }
+
+  function renderSceneList() {
+    const list = $("dsSceneList");
+    if (!list) return;
+    const rows = scenes.map((scene, index) => `
+      <div class="ds-shot-row ds-scene-row${String(scene.id) === String(selectedSceneId) ? " is-selected" : ""}" draggable="true" data-scene-id="${scene.id}" title="${esc(scene.slug)}">
+        <span class="ds-scene-pos">${index + 1}</span>
+        <span class="ds-shot-slug">${esc(scene.slug)}</span>
+        <span class="ds-shot-scene">${esc(scene.name || "")}</span>
+        <span class="ds-shot-count" title="Shots in this scene">${scene.shot_count || 0}</span>
+        <span class="ds-shot-row-actions">
+          <button type="button" class="ds-shot-mini" data-scene-action="insert" title="Insert a scene after this one">+</button>
+          <button type="button" class="ds-shot-mini ds-shot-mini-danger" data-scene-action="delete" title="Delete this scene (its shots stay)">&times;</button>
+        </span>
+      </div>`).join("");
+    list.innerHTML = `
+      <div class="ds-shot-list-head">
+        <span class="ds-shot-list-title">Scenes <span class="ds-shot-count">${scenes.length}</span></span>
+        <button type="button" class="history-filter-toggle" id="dsAddSceneBtn">+ Add scene</button>
+      </div>
+      <div class="ds-shot-status-line" id="dsSceneStatusLine">${selectedSceneId ? `Filtering to ${esc((findScene(selectedSceneId) || {}).slug || "")} \u00b7 <button type="button" class="ds-shot-mini" id="dsSceneShowAll">All shots</button>` : ""}</div>
+      <div class="ds-shot-rows" id="dsSceneRows">${rows || '<div class="ds-shot-empty">No scenes yet. Add the first one.</div>'}</div>`;
+    $("dsAddSceneBtn")?.addEventListener("click", () => createScene());
+    $("dsSceneShowAll")?.addEventListener("click", () => selectScene(""));
+    const container = $("dsSceneRows");
+    container?.querySelectorAll(".ds-scene-row").forEach((row) => {
+      const id = row.dataset.sceneId;
+      row.addEventListener("click", (event) => { if (!event.target.closest("[data-scene-action]")) selectScene(id, { openEditor: true }); });
+      row.querySelector('[data-scene-action="insert"]').addEventListener("click", (event) => { event.stopPropagation(); createScene({ after_id: Number(id) }); });
+      const del = row.querySelector('[data-scene-action="delete"]');
+      del.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (del.dataset.armed === "1") { deleteScene(id); return; }
+        del.dataset.armed = "1"; del.textContent = "Sure?"; del.classList.add("is-armed");
+        window.setTimeout(() => { del.dataset.armed = ""; del.innerHTML = "&times;"; del.classList.remove("is-armed"); }, 2500);
+      });
+      row.addEventListener("dragstart", (event) => { sceneDragId = id; row.classList.add("is-dragging"); event.dataTransfer.effectAllowed = "move"; try { event.dataTransfer.setData("text/plain", "ds-scene:" + id); } catch (e) {} });
+      row.addEventListener("dragend", () => { sceneDragId = ""; container.querySelectorAll(".ds-scene-row").forEach((el) => el.classList.remove("is-dragging", "drop-before", "drop-after")); });
+      row.addEventListener("dragover", (event) => {
+        if (!sceneDragId || sceneDragId === id) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = "move";
+        const rect = row.getBoundingClientRect(); const before = event.clientY < rect.top + rect.height / 2;
+        row.classList.toggle("drop-before", before); row.classList.toggle("drop-after", !before);
+      });
+      row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after"));
+      row.addEventListener("drop", (event) => {
+        if (!sceneDragId || sceneDragId === id) return;
+        event.preventDefault();
+        const rect = row.getBoundingClientRect(); const before = event.clientY < rect.top + rect.height / 2;
+        const ids = scenes.map((scene) => String(scene.id)).filter((value) => value !== sceneDragId);
+        const targetIndex = ids.indexOf(id);
+        ids.splice(before ? targetIndex : targetIndex + 1, 0, sceneDragId);
+        reorderScenes(ids);
+      });
+    });
+  }
+
+  async function createScene(extra = {}) {
+    if (!isFilm()) return;
+    try {
+      const payload = await api("/api/scenes", { method: "POST", body: { project_id: project.id, ...extra } });
+      await loadShots();
+      selectScene(payload.scene.id, { openEditor: true });
+      setSceneStatus(`${payload.scene.slug} added.`, "success");
+    } catch (error) {
+      setSceneStatus(error.message || "Could not add the scene.", "error");
+    }
+  }
+
+  async function deleteScene(id) {
+    try {
+      const payload = await api(`/api/scenes/${id}`, { method: "DELETE" });
+      if (String(selectedSceneId) === String(id)) selectedSceneId = "";
+      await loadShots();
+      setSceneStatus(`${payload.deleted} deleted \u00b7 ${payload.detached_shots} shot(s) kept and unassigned.`, "success");
+    } catch (error) {
+      setSceneStatus(error.message || "Could not delete the scene.", "error");
+    }
+  }
+
+  async function reorderScenes(ids) {
+    try {
+      const payload = await api("/api/scenes/reorder", { method: "POST", body: { project_id: project.id, ids: ids.map(Number) } });
+      scenes = Array.isArray(payload.scenes) ? payload.scenes : scenes;
+      renderSceneList(); renderList(); renderSceneEditor();
+    } catch (error) {
+      setSceneStatus(error.message || "Could not reorder.", "error");
+      renderSceneList();
+    }
+  }
+
+  function setSceneStatus(message, tone = "") {
+    const el = $("dsSceneStatusLine");
+    if (!el) { setStatusLine(message, tone); return; }
+    el.textContent = message || "";
+    el.className = "ds-shot-status-line" + (tone ? " " + tone : "");
+    if (message) window.setTimeout(() => { if (el.textContent === message) renderSceneList(); }, 3000);
+  }
+
+  const SCENE_SECTIONS = [
+    { key: "brief", label: "Brief", field: "brief", rows: 4, hint: "What happens here, where, who is in it." },
+    { key: "script", label: "Script", field: "script", rows: 16, hint: "The dialogue and action for the whole scene. Paste the pages.", script: true },
+    { key: "environment", label: "Environment", environment: true },
+    { key: "shots", label: "Shots", shots: true },
+    { key: "notes", label: "Notes", field: "note", rows: 3, hint: "Anything the crew should know." },
+  ];
+
+  function ensureEnvironmentCatalog() {
+    if (environmentCatalog) return Promise.resolve(false);
+    return fetch("/api/elements?category=locations&per_page=500", { credentials: "same-origin" })
+      .then((response) => response.json())
+      .then((payload) => { environmentCatalog = (payload.items || []).filter((item) => item.type === "environment" || true); return true; })
+      .catch(() => { environmentCatalog = []; return false; });
+  }
+
+  function sceneLockMarkup(scene, field) {
+    const locked = Array.isArray(scene.locked_fields) && scene.locked_fields.includes(field);
+    return `<button type="button" class="ds-lock${locked ? " is-locked" : ""}" data-scene-lock="${field}" title="${locked ? "Locked by hand edit \u2014 click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${locked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>`;
+  }
+
+  function renderSceneEditor() {
+    const host = $("dsSceneEditor");
+    if (!host) return;
+    if (!isFilm()) { host.innerHTML = ""; return; }
+    const scene = findScene(selectedSceneId);
+    if (!scene) {
+      host.innerHTML = `<div class="ds-editor-empty">${scenes.length ? "Select a scene in the Scenes panel, or " : "No scenes yet. "}<button type="button" class="history-filter-toggle" id="dsSceneEmptyAdd">+ New scene</button></div>`;
+      $("dsSceneEmptyAdd")?.addEventListener("click", () => createScene());
+      return;
+    }
+    const mine = shots.filter((shot) => String(shot.scene_id || "") === String(scene.id));
+    const env = scene.environment_id && environmentCatalog ? environmentCatalog.find((item) => String(item.id) === String(scene.environment_id)) : null;
+    const lockedOf = (field) => Array.isArray(scene.locked_fields) && scene.locked_fields.includes(field);
+    const sections = SCENE_SECTIONS.map((section) => {
+      let body = "";
+      let filled = false;
+      if (section.field) {
+        const value = scene[section.field] || "";
+        filled = hasText(value);
+        body = `<div class="ds-field ds-field-wide${lockedOf(section.field) ? " is-locked" : ""}" data-scene-wrap="${section.field}">
+          <div class="ds-field-label"><span>${esc(section.label)}</span>${sceneLockMarkup(scene, section.field)}</div>
+          <textarea class="ds-field-input${section.script ? " ds-script" : ""}" data-scene-field="${section.field}" rows="${section.rows}" placeholder="${esc(section.hint)}">${esc(value)}</textarea>
+        </div>`;
+      } else if (section.environment) {
+        filled = Boolean(scene.environment_id);
+        const options = (environmentCatalog || []).map((item) => `<option value="${esc(item.id)}" ${String(item.id) === String(scene.environment_id || "") ? "selected" : ""}>${esc(item.name || item.id)}</option>`).join("");
+        body = `<div class="ds-scene-env${lockedOf("environment_id") ? " is-locked" : ""}" data-scene-wrap="environment_id">
+          ${env ? `<img class="ds-scene-env-thumb" src="${esc(env.img_url)}" alt="" draggable="false">` : ""}
+          <div class="ds-scene-env-body">
+            ${env ? `<div class="ds-style-name">${esc(env.name)}</div><div class="ds-section-hint">${esc(env.description || "")}</div>` : (scene.environment_id ? `<div class="ds-section-hint">Environment "${esc(scene.environment_id)}" is not in the Elements library.</div>` : `<div class="ds-section-hint">No environment attached. Pick a location element scanned in Elements.</div>`)}
+            <div class="ds-attach-actions"><select class="ds-field-input ds-style-select" data-scene-field="environment_id"><option value="">No environment</option>${options}</select>${sceneLockMarkup(scene, "environment_id")}</div>
+          </div>
+        </div>`;
+      } else if (section.shots) {
+        filled = mine.length > 0;
+        body = `<div class="ds-shot-rows ds-scene-shots" id="dsSceneShotRows">${mine.map(shotRowMarkup).join("") || '<div class="ds-shot-empty">No shots in this scene yet.</div>'}</div>
+          <div class="ds-attach-actions"><button type="button" class="history-filter-toggle" id="dsSceneAddShot">+ Add shot to scene</button><span class="ds-attach-hint">Drag to reorder \u00b7 one ordering for the whole film</span></div>`;
+      }
+      return `<details class="ds-section${filled ? " has-content" : " is-empty"}${section.script ? " ds-section-script" : ""}" data-section="scene_${section.key}" ${isSectionOpen("scene_" + section.key) ? "open" : ""}>
+        <summary>${esc(section.label)}${section.shots ? `<span class="ds-section-count">${mine.length}</span>` : (filled ? '<span class="ds-section-check">\u2713</span>' : "")}</summary>${body}</details>`;
+    }).join("");
+    const nameLocked = lockedOf("name");
+    host.innerHTML = `
+      <div class="ds-editor-head">
+        <span class="ds-editor-slug" title="Fixed at creation; never changes">${esc(scene.slug)}</span>
+        <div class="ds-field ds-field-inline${nameLocked ? " is-locked" : ""}" data-scene-wrap="name">
+          <input class="ds-field-input" data-scene-field="name" type="text" placeholder="Scene name, as you would say it" value="${esc(scene.name || "")}" autocomplete="off">
+          ${sceneLockMarkup(scene, "name")}
+        </div>
+        <span class="ds-editor-order">#${scenes.findIndex((item) => item.id === scene.id) + 1} of ${scenes.length} \u00b7 ${mine.length} shot${mine.length === 1 ? "" : "s"}</span>
+        <span class="ds-editor-saved" id="dsSceneSaved"></span>
+        <button type="button" class="history-filter-toggle" id="dsSceneShowShots" title="Filter the strip and the Shots panel to this scene">Show shots</button>
+      </div>
+      <div class="ds-sections ds-scene-sections">${sections}</div>`;
+    host.querySelectorAll("details.ds-section").forEach((details) => details.addEventListener("toggle", () => setSectionOpen(details.dataset.section, details.open)));
+    host.querySelectorAll("[data-scene-field]").forEach((input) => input.addEventListener("change", () => saveSceneField(scene.id, input.dataset.sceneField, input.value)));
+    host.querySelectorAll("[data-scene-lock]").forEach((button) => button.addEventListener("click", () => toggleSceneLock(scene.id, button.dataset.sceneLock)));
+    $("dsSceneAddShot")?.addEventListener("click", () => createShot({ scene_id: scene.id, after_id: lastShotIdInScene(scene.id) }));
+    $("dsSceneShowShots")?.addEventListener("click", () => { selectScene(scene.id); if (typeof window.setPromptMode === "function") window.setPromptMode("shot"); });
+    bindRowEvents("dsSceneShotRows");
+    ensureEnvironmentCatalog().then((changed) => { if (changed && findScene(selectedSceneId) === scene) renderSceneEditor(); });
+  }
+
+  async function saveSceneField(sceneId, field, value) {
+    const scene = findScene(sceneId);
+    if (!scene) return;
+    const locked = Array.isArray(scene.locked_fields) ? scene.locked_fields.slice() : [];
+    if (!locked.includes(field)) locked.push(field);
+    try {
+      const payload = await api(`/api/scenes/${sceneId}`, { method: "PATCH", body: { [field]: value, locked_fields: locked } });
+      const index = scenes.findIndex((item) => item.id === payload.scene.id);
+      if (index >= 0) scenes[index] = payload.scene;
+      const wrap = document.querySelector(`#dsSceneEditor [data-scene-wrap="${field}"]`);
+      if (wrap) { wrap.classList.add("is-locked"); const btn = wrap.querySelector("[data-scene-lock]"); if (btn) { btn.classList.add("is-locked"); btn.querySelector("path")?.setAttribute("d", "M7 11V7a5 5 0 0 1 10 0v4"); } }
+      if (field === "name") { renderSceneList(); renderList(); }
+      if (field === "environment_id") renderSceneEditor();
+      const el = $("dsSceneSaved"); if (el) { el.textContent = "Saved"; window.setTimeout(() => { if (el.textContent === "Saved") el.textContent = ""; }, 1800); }
+    } catch (error) {
+      setSceneStatus(error.message || "Could not save.", "error");
+    }
+  }
+
+  async function toggleSceneLock(sceneId, field) {
+    const scene = findScene(sceneId);
+    if (!scene) return;
+    const locked = Array.isArray(scene.locked_fields) ? scene.locked_fields.slice() : [];
+    const next = locked.includes(field) ? locked.filter((key) => key !== field) : [...locked, field];
+    try {
+      const payload = await api(`/api/scenes/${sceneId}`, { method: "PATCH", body: { locked_fields: next } });
+      const index = scenes.findIndex((item) => item.id === payload.scene.id);
+      if (index >= 0) scenes[index] = payload.scene;
+      renderSceneEditor();
+    } catch (error) {
+      setSceneStatus(error.message || "Could not change the lock.", "error");
+    }
   }
 
   // ---- takes + render --------------------------------------------------------
@@ -1388,6 +1683,7 @@
         document.querySelectorAll(".ds-editor-head .ds-shot-status").forEach((dot) => dot.setAttribute("data-status", payload.shot.status));
       }
       refreshEditorState(payload.shot);
+      if (fieldKey === "scene_id") { await loadScenes(); renderList(); renderSceneList(); renderEditor(); renderSceneEditor(); }
       flashSaved("Saved");
     } catch (error) {
       setStatusLine(error.message || "Could not save.", "error");
@@ -1438,7 +1734,7 @@
     onScopeChange(null);
   }
 
-  window.directorShots = { reload: loadShots, select: selectShot, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked, renderShot };
+  window.directorShots = { reload: loadShots, select: selectShot, selectScene, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked, renderShot };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });
