@@ -1,0 +1,33 @@
+{
+  "id": "zoey_hale",
+  "name": "Zoey Hale",
+  "gender": "female",
+  "ethnicity": "northern_european",
+  "age_group": "young_adult",
+  "skin_tone": "very_fair",
+  "hair_color": "platinum_blonde",
+  "hair_style": "long_straight",
+  "eye_color": "light_blue",
+  "body_type": "slender",
+  "description": "Oval face with fair skin, high cheekbones, and striking light blue eyes. Straight nose and full lips set in a neutral, high-fashion expression.",
+  "tags": [
+    "minimalist",
+    "beauty",
+    "portrait",
+    "blonde",
+    "editorial"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "zoey_hale_001.jpg",
+      "path": "zoey_hale_001.jpg",
+      "added_at": "2026-09-13T17:07:38.394335",
+      "is_primary": true,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-13T17:07:38.394335",
+  "updated_at": "2026-09-13T17:07:38.394335"
+}

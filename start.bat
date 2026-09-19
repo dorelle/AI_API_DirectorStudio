@@ -1,5 +1,6 @@
 @echo off
 title AI API Studio
+cd /d "%~dp0"
 echo.
 echo   AI API Studio 1.4
 echo   ============================

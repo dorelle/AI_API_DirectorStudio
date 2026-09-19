@@ -1,0 +1,33 @@
+{
+  "id": "wren_calloway",
+  "name": "Wren Calloway",
+  "gender": "female",
+  "ethnicity": "south_asian",
+  "age_group": "young_adult",
+  "skin_tone": "medium_olive",
+  "hair_color": "black",
+  "hair_style": "tied_back",
+  "eye_color": "brown",
+  "body_type": "slim",
+  "description": "Oval face with prominent cheekbones and a straight nose. Clear, textured skin with a neutral expression and deep-set brown eyes.",
+  "tags": [
+    "editorial",
+    "natural",
+    "portrait",
+    "minimalist",
+    "beauty"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "wren_calloway_001.jpg",
+      "path": "wren_calloway_001.jpg",
+      "added_at": "2026-09-13T14:24:15.743791",
+      "is_primary": true,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-13T14:24:15.743791",
+  "updated_at": "2026-09-13T14:24:15.743791"
+}

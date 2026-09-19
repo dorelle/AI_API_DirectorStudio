@@ -104,13 +104,96 @@
     {% endif %}
   </section>
 
+  <section class="settings-card" id="catalogCard">
+    <h2>Fal Model Catalog</h2>
+    <p class="settings-desc">
+      Video models are built live from fal's public OpenAPI schemas (no key needed). The maintained list is
+      <code>{{ catalog_status.endpoints_path }}</code> ({{ catalog_status.endpoint_count }} endpoints); the fetched result is
+      <code>{{ catalog_status.generated_path }}</code>. If a refresh fails, the previous catalog stays in use.
+    </p>
+
+    <div class="catalog-status-row">
+      <span id="catalogStatusText">
+        {% if catalog_status.live %}
+          Live catalog: {{ catalog_status.generated_count }} models, fetched {{ catalog_status.generated_at }}
+        {% else %}
+          No fetched catalog yet - the app is using its built-in model list.
+        {% endif %}
+      </span>
+      <button class="btn-verify" id="catalogRefreshBtn" onclick="refreshCatalog()">
+        <span id="catalogRefreshLabel">Refresh model catalog</span>
+      </button>
+    </div>
+    <div id="catalogRefreshStatus" class="key-status"></div>
+    <div id="catalogReportWrap" style="display:none">
+      <div class="catalog-report-summary" id="catalogReportSummary"></div>
+      <div class="catalog-report-scroll">
+        <table class="log-table catalog-report-table">
+          <thead><tr><th>Status</th><th>Model</th><th>Endpoint</th><th>Details</th></tr></thead>
+          <tbody id="catalogReportBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3 class="stats-group-label" style="margin-top:22px">Add a model</h3>
+    <p class="settings-desc">Paste a fal endpoint id. Studio fetches its schema, shows what it found, and on confirm appends it to the list and regenerates the catalog.</p>
+    <div class="key-row">
+      <div class="input-wrap">
+        <input type="text" id="catalogAddEndpoint" placeholder="fal-ai/veo3.1/image-to-video" autocomplete="off" spellcheck="false"
+               onkeydown="if (event.key === 'Enter') probeCatalogEndpoint()">
+      </div>
+      <button class="btn-verify" id="catalogProbeBtn" onclick="probeCatalogEndpoint()"><span id="catalogProbeLabel">Fetch schema</span></button>
+    </div>
+    <div id="catalogAddStatus" class="key-status"></div>
+
+    <div id="catalogProbePreview" class="catalog-probe" style="display:none">
+      <div class="catalog-probe-grid">
+        <label class="catalog-probe-field">
+          <span>Label</span>
+          <input type="text" id="catalogAddLabel" placeholder="Shown in the model dropdown">
+        </label>
+        <label class="catalog-probe-field">
+          <span>Family</span>
+          <select id="catalogAddFamily">
+            {% for key, fam in video_families.items() %}
+              {% if 'fal' in (fam.provider_order or []) %}
+              <option value="{{ key }}">{{ fam.label }} ({{ key }})</option>
+              {% endif %}
+            {% endfor %}
+            <option value="__new__">New family...</option>
+          </select>
+        </label>
+        <label class="catalog-probe-field" id="catalogAddFamilyNewWrap" style="display:none">
+          <span>New family key / label</span>
+          <div class="catalog-probe-inline">
+            <input type="text" id="catalogAddFamilyKey" placeholder="key e.g. hunyuan">
+            <input type="text" id="catalogAddFamilyLabel" placeholder="Label e.g. Hunyuan">
+          </div>
+        </label>
+        <label class="catalog-probe-field">
+          <span>Sort order</span>
+          <input type="number" id="catalogAddSort" value="900" min="0" step="1">
+        </label>
+      </div>
+      <div class="catalog-probe-facts" id="catalogProbeFacts"></div>
+      <details class="catalog-probe-raw">
+        <summary>Full derived entry</summary>
+        <pre id="catalogProbeJson"></pre>
+      </details>
+      <div class="key-row" style="margin-top:12px">
+        <button class="btn-save" id="catalogAddConfirmBtn" onclick="confirmCatalogAdd()">Add to catalog &amp; regenerate</button>
+        <button class="btn-verify" onclick="cancelCatalogAdd()">Cancel</button>
+      </div>
+    </div>
+  </section>
+
   <section class="settings-card">
     <h2>Kling API Token</h2>
-    <p class="settings-desc">Enter your Kling API bearer token for native Kling video generation. This powers the direct Kling provider in the new Video tab.</p>
+    <p class="settings-desc">Enter your Kling credentials as <code>ACCESS_KEY:SECRET_KEY</code> (from the Kling console). The app signs a fresh 30-minute JWT for every request, so long jobs never outlive the token. A pre-minted JWT is also accepted but will expire. This powers the direct Kling provider in the Video tab.</p>
 
     <div class="key-row">
       <div class="input-wrap">
-        <input type="password" id="klingApiTokenInput" placeholder="kling bearer token" autocomplete="off"
+        <input type="password" id="klingApiTokenInput" placeholder="ACCESS_KEY:SECRET_KEY" autocomplete="off"
                value="{{ '*' * 20 if has_kling_token else '' }}">
         <button class="btn-icon" id="toggleKlingTokenBtn" title="Show/Hide" onclick="toggleKlingTokenVisibility()">Show</button>
       </div>
@@ -745,6 +828,225 @@ function showByteplusKeyStatus(msg, type) {
   el.className = "key-status " + type;
   el.style.display = "block";
 }
+
+/* ── Fal model catalog ──────────────────────────────────────────── */
+function showCatalogStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "key-status " + type;
+  el.style.display = msg ? "block" : "none";
+}
+
+function renderCatalogReport(result) {
+  const wrap = document.getElementById("catalogReportWrap");
+  const summary = document.getElementById("catalogReportSummary");
+  const body = document.getElementById("catalogReportBody");
+  if (!wrap || !summary || !body) return;
+  const counts = result.counts || {};
+  summary.textContent = `${counts.added || 0} added · ${counts.changed || 0} changed · ${counts.unchanged || 0} unchanged · ${counts.failed || 0} failed`
+    + (result.written ? " — catalog written and reloaded." : " — catalog NOT written; previous catalog still in use.");
+  body.innerHTML = "";
+  const rows = Array.isArray(result.report) ? result.report : [];
+  const order = { failed: 0, changed: 1, added: 2, unchanged: 3 };
+  rows.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9)).forEach(row => {
+    const tr = document.createElement("tr");
+    const status = document.createElement("td");
+    status.innerHTML = `<span class="catalog-pill catalog-pill-${row.status}">${row.status}</span>`;
+    const model = document.createElement("td");
+    model.textContent = row.label || row.id;
+    const endpoint = document.createElement("td");
+    endpoint.innerHTML = `<code>${row.endpoint || row.id}</code>`;
+    const details = document.createElement("td");
+    if (row.status === "failed") {
+      details.textContent = row.error || "";
+    } else if (row.status === "changed") {
+      details.textContent = (row.changed_fields || []).join(", ");
+    } else {
+      details.textContent = "";
+    }
+    tr.append(status, model, endpoint, details);
+    body.appendChild(tr);
+  });
+  wrap.style.display = rows.length ? "" : "none";
+  const statusText = document.getElementById("catalogStatusText");
+  if (statusText && result.status) {
+    statusText.textContent = result.status.live
+      ? `Live catalog: ${result.status.generated_count} models, fetched ${result.status.generated_at}`
+      : "No fetched catalog yet - the app is using its built-in model list.";
+  }
+}
+
+async function refreshCatalog() {
+  const btn = document.getElementById("catalogRefreshBtn");
+  const label = document.getElementById("catalogRefreshLabel");
+  btn.disabled = true;
+  label.textContent = "Fetching schemas...";
+  showCatalogStatus("catalogRefreshStatus", "", "");
+  try {
+    const r = await fetch("/api/catalog/refresh", { method: "POST" });
+    const data = await r.json();
+    if (data.error && !data.report) {
+      showCatalogStatus("catalogRefreshStatus", data.error, "error");
+      return;
+    }
+    renderCatalogReport(data);
+    showCatalogStatus("catalogRefreshStatus",
+      data.ok ? "Catalog refreshed. The Video tab picks up the new models on its next page load." : "Some endpoints failed; the previous catalog is still in use. Fix or remove them and refresh again.",
+      data.ok ? "success" : "error");
+  } catch (e) {
+    showCatalogStatus("catalogRefreshStatus", "Refresh failed: " + (e.message || e), "error");
+  } finally {
+    btn.disabled = false;
+    label.textContent = "Refresh model catalog";
+  }
+}
+
+let catalogProbeEntry = null;
+
+function describeCatalogEntry(entry) {
+  const facts = [];
+  facts.push(["Input mode", (entry.input_modes || []).join(", ") || "?"]);
+  facts.push(["Kind", entry.video_mode_kind || "?"]);
+  if (entry.supports_duration) facts.push(["Durations", `${(entry.durations || []).join(", ")}s${entry.duration_allows_auto ? " (or auto)" : ""}`]);
+  else facts.push(["Durations", "not exposed"]);
+  facts.push(["Resolutions", entry.supports_resolution ? (entry.resolutions || []).join(", ") : "not exposed"]);
+  facts.push(["Aspect ratios", entry.supports_aspect_ratio ? (entry.aspect_ratios || []).join(", ") : "not exposed (inferred by the model)"]);
+  if (entry.supports_start_image) facts.push(["Start frame", `${entry.start_image_field}${entry.start_image_required ? " (required)" : ""}`]);
+  if (entry.supports_end_image) facts.push(["End frame", entry.end_image_field]);
+  if (entry.supports_reference_images) facts.push(["Reference images", `${entry.reference_images_field}, up to ${entry.max_reference_images}${entry.reference_prompt_token ? `, prompt token ${entry.reference_prompt_token.replace("{n}", "1")}` : ""}`]);
+  if (entry.supports_reference_videos) facts.push(["Reference videos", `${entry.reference_videos_field}, up to ${entry.max_reference_videos}`]);
+  if (entry.supports_source_video) facts.push(["Source video", entry.source_video_field]);
+  const flags = [];
+  if (entry.supports_generate_audio) flags.push("generate_audio");
+  if (entry.supports_negative_prompt) flags.push("negative_prompt");
+  if (entry.supports_safety_checker) flags.push("safety checker");
+  if (entry.supports_cfg_scale) flags.push("cfg_scale");
+  if (entry.supports_multi_prompt) flags.push("multi_prompt");
+  if (entry.supports_elements) flags.push("elements");
+  if (entry.supports_seed) flags.push("seed");
+  facts.push(["Options", flags.join(", ") || "none"]);
+  return facts;
+}
+
+async function probeCatalogEndpoint() {
+  const input = document.getElementById("catalogAddEndpoint");
+  const btn = document.getElementById("catalogProbeBtn");
+  const label = document.getElementById("catalogProbeLabel");
+  const endpoint = String(input.value || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!endpoint) {
+    showCatalogStatus("catalogAddStatus", "Paste a fal endpoint id first.", "error");
+    return;
+  }
+  btn.disabled = true;
+  label.textContent = "Fetching...";
+  showCatalogStatus("catalogAddStatus", "", "");
+  document.getElementById("catalogProbePreview").style.display = "none";
+  try {
+    const r = await fetch("/api/catalog/probe", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      showCatalogStatus("catalogAddStatus", data.error || "Could not fetch that endpoint's schema.", "error");
+      return;
+    }
+    catalogProbeEntry = data.entry;
+    const guessLabel = endpoint.split("/").filter(Boolean).slice(1).join(" ").replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    document.getElementById("catalogAddLabel").value = guessLabel || endpoint;
+    const facts = document.getElementById("catalogProbeFacts");
+    facts.innerHTML = "";
+    describeCatalogEntry(data.entry).forEach(([k, v]) => {
+      const row = document.createElement("div");
+      row.className = "catalog-fact";
+      row.innerHTML = `<span class="catalog-fact-key"></span><span class="catalog-fact-val"></span>`;
+      row.children[0].textContent = k;
+      row.children[1].textContent = v;
+      facts.appendChild(row);
+    });
+    const shown = Object.assign({}, data.entry);
+    delete shown.schema_fetched_at;
+    document.getElementById("catalogProbeJson").textContent = JSON.stringify(shown, null, 2);
+    document.getElementById("catalogProbePreview").style.display = "";
+    if (data.already_listed) {
+      showCatalogStatus("catalogAddStatus", "This endpoint is already in the catalog. You can still review what fal reports for it.", "error");
+      document.getElementById("catalogAddConfirmBtn").disabled = true;
+    } else {
+      document.getElementById("catalogAddConfirmBtn").disabled = false;
+      showCatalogStatus("catalogAddStatus", "Schema fetched. Review the details, then add it.", "success");
+    }
+  } catch (e) {
+    showCatalogStatus("catalogAddStatus", "Fetch failed: " + (e.message || e), "error");
+  } finally {
+    btn.disabled = false;
+    label.textContent = "Fetch schema";
+  }
+}
+
+function cancelCatalogAdd() {
+  catalogProbeEntry = null;
+  document.getElementById("catalogProbePreview").style.display = "none";
+  showCatalogStatus("catalogAddStatus", "", "");
+}
+
+async function confirmCatalogAdd() {
+  if (!catalogProbeEntry) return;
+  const btn = document.getElementById("catalogAddConfirmBtn");
+  const familySelect = document.getElementById("catalogAddFamily");
+  let family = familySelect.value;
+  let familyLabel = "";
+  if (family === "__new__") {
+    family = String(document.getElementById("catalogAddFamilyKey").value || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+    familyLabel = String(document.getElementById("catalogAddFamilyLabel").value || "").trim();
+    if (!family) {
+      showCatalogStatus("catalogAddStatus", "Enter a key for the new family.", "error");
+      return;
+    }
+  }
+  btn.disabled = true;
+  btn.textContent = "Adding & regenerating...";
+  try {
+    const r = await fetch("/api/catalog/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        endpoint: catalogProbeEntry.fal_endpoint || catalogProbeEntry.id,
+        label: document.getElementById("catalogAddLabel").value,
+        family,
+        family_label: familyLabel,
+        sort_order: document.getElementById("catalogAddSort").value,
+      }),
+    });
+    const data = await r.json();
+    if (data.error && !data.report) {
+      showCatalogStatus("catalogAddStatus", data.error, "error");
+      return;
+    }
+    renderCatalogReport(data);
+    showCatalogStatus("catalogAddStatus",
+      data.ok ? "Added. The model appears in the Video tab on its next page load." : "Added to the list, but the regeneration had failures - see the report above.",
+      data.ok ? "success" : "error");
+    if (data.ok) {
+      document.getElementById("catalogProbePreview").style.display = "none";
+      document.getElementById("catalogAddEndpoint").value = "";
+      catalogProbeEntry = null;
+    }
+  } catch (e) {
+    showCatalogStatus("catalogAddStatus", "Add failed: " + (e.message || e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "Add to catalog &amp; regenerate";
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const familySelect = document.getElementById("catalogAddFamily");
+  if (familySelect) {
+    familySelect.addEventListener("change", () => {
+      document.getElementById("catalogAddFamilyNewWrap").style.display = familySelect.value === "__new__" ? "" : "none";
+    });
+  }
+});
 </script>
 </body>
 </html>

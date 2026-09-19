@@ -70,6 +70,7 @@ from flask import (Flask, render_template, request, redirect,
                    url_for, session, jsonify, send_from_directory)
 from PIL import Image, ImageOps
 import fal_client
+import fal_catalog
 
 app = Flask(__name__)
 app.secret_key = None
@@ -89,6 +90,8 @@ USERS = {
 # Paths
 # ---------------------------------------------------------------------------
 BASE_DIR         = os.path.dirname(__file__)
+FAL_ENDPOINTS_PATH = os.path.join(BASE_DIR, fal_catalog.ENDPOINTS_FILENAME)
+FAL_GENERATED_PATH = os.path.join(BASE_DIR, fal_catalog.GENERATED_FILENAME)
 CONFIG_FILE      = os.path.join(BASE_DIR, "config.json")
 IMAGE_ASSETS_DIR = os.path.join(BASE_DIR, "Image_assets")
 LOVED_DIR        = os.path.join(IMAGE_ASSETS_DIR, "loved")
@@ -1544,12 +1547,78 @@ def normalize_video_duration(value, default: int = 5) -> int:
         duration = int(str(value or default).strip())
     except Exception:
         duration = default
-    return duration if duration in VIDEO_DURATION_ALL_OPTIONS else default
+    return duration if 1 <= duration <= 120 else default
 
 
 def normalize_video_resolution(value: str) -> str:
     resolution = str(value or "720p").strip().lower()
     return resolution if resolution in {"480p", "540p", "580p", "720p", "1080p", "1440p", "2160p", "4k"} else "720p"
+
+
+def normalize_optional_unit_float(value):
+    """A float in 0..1, or None when blank/invalid (used for cfg_scale)."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        number = float(str(value).strip())
+    except Exception:
+        return None
+    return max(0.0, min(1.0, number))
+
+
+def parse_multi_prompt_shots(text: str, default_duration: int = 5) -> list[dict]:
+    """
+    One shot per line. An optional leading "<seconds>s:" sets that shot's length:
+        3s: the cat wakes up
+        the cat stretches
+    """
+    shots: list[dict] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        duration = default_duration
+        match = re.match(r"^(\d{1,2})\s*s?\s*[:|\-]\s*(.+)$", line)
+        if match:
+            duration = int(match.group(1))
+            line = match.group(2).strip()
+        if line:
+            shots.append({"prompt": line, "duration": str(max(1, min(15, duration)))})
+    return shots
+
+
+def normalize_video_elements(items, model_info: dict) -> list[dict]:
+    """
+    Kling v3 style elements: each one is a frontal image + 1..N angle references,
+    or a single video. Empty elements are dropped.
+    """
+    schema = model_info.get("element_schema") or {}
+    max_elements = max(0, int(model_info.get("max_elements", 0) or 0))
+    refs_max = max(0, int(schema.get("references_max", 3) or 0))
+    out: list[dict] = []
+    for raw in (items or []):
+        if not isinstance(raw, dict):
+            continue
+        frontal = normalize_video_image_payload(raw.get("frontal"), "element-frontal.png") if isinstance(raw.get("frontal"), dict) else {}
+        refs = normalize_video_image_payloads(raw.get("references")) if isinstance(raw.get("references"), list) else []
+        if refs_max:
+            refs = refs[:refs_max]
+        video = normalize_video_file_payload(raw.get("video"), "element-video.mp4") if isinstance(raw.get("video"), dict) else {}
+        has_frontal = bool(str(frontal.get("data") or frontal.get("url") or "").strip())
+        has_refs = any(str(r.get("data") or r.get("url") or "").strip() for r in refs)
+        has_video = bool(str(video.get("data") or video.get("url") or "").strip())
+        if not (has_frontal or has_refs or has_video):
+            continue
+        out.append({
+            "name": str(raw.get("name") or "").strip()[:80],
+            "frontal": frontal if has_frontal else {},
+            "references": [r for r in refs if str(r.get("data") or r.get("url") or "").strip()],
+            "video": video if has_video else {},
+            "voice_id": str(raw.get("voice_id") or "").strip(),
+        })
+        if max_elements and len(out) >= max_elements:
+            break
+    return out
 
 
 def normalize_video_input_mode(value: str) -> str:
@@ -1738,6 +1807,16 @@ def normalize_video_request(body: dict | None) -> dict:
     payload["sourceAudio"] = normalize_audio_file_payload(payload.get("sourceAudio"), "driving-audio.mp3") if supports_driving_audio else {}
     payload["referenceImages"] = normalize_video_image_payloads(payload.get("referenceImages")) if supports_reference_images else []
     payload["referenceVideos"] = normalize_video_file_payloads(payload.get("referenceVideos"), "video-reference") if supports_reference_videos else []
+    supports_end_image = bool(model_info.get("supports_end_image")) and input_mode != "text"
+    payload["endImage"] = normalize_video_image_payload(payload.get("endImage"), "video-end-frame.png") if supports_end_image else {}
+    payload["videoCfgScale"] = normalize_optional_unit_float(payload.get("videoCfgScale")) if model_info.get("supports_cfg_scale") else None
+    payload["videoMultiPrompt"] = str(payload.get("videoMultiPrompt") or "").strip() if model_info.get("supports_multi_prompt") else ""
+    payload["videoSeed"] = normalize_optional_int(payload.get("videoSeed")) if model_info.get("supports_seed") else None
+    payload["videoPromptExpansion"] = bool(payload.get("videoPromptExpansion", True))
+    shot_options = [str(x) for x in (model_info.get("shot_type_options") or [])]
+    requested_shot = str(payload.get("videoShotType") or model_info.get("shot_type_default") or "").strip()
+    payload["videoShotType"] = requested_shot if (model_info.get("supports_shot_type") and requested_shot in shot_options) else ""
+    payload["videoElements"] = normalize_video_elements(payload.get("videoElements"), model_info) if model_info.get("supports_elements") else []
     if not supports_reference_images:
         payload["referenceImages"] = []
     else:
@@ -4079,7 +4158,67 @@ def settings():
                            stats=stats,
                            vision_models=VISION_MODELS_INFO,
                            analysis_model=TALENT_ANALYSIS_MODEL,
+                           catalog_status=get_fal_catalog_status(),
+                           video_families=VIDEO_MODEL_FAMILIES,
                            user=session["user"])
+
+
+# ---------------------------------------------------------------------------
+# Route - live fal model catalog
+# ---------------------------------------------------------------------------
+@app.route("/api/catalog/status")
+@login_required
+def api_catalog_status():
+    return jsonify({"ok": True, "status": get_fal_catalog_status()})
+
+
+@app.route("/api/catalog/refresh", methods=["POST"])
+@login_required
+def api_catalog_refresh():
+    try:
+        result = refresh_fal_catalog()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Catalog refresh failed: {exc}"})
+    return jsonify(result)
+
+
+@app.route("/api/catalog/probe", methods=["POST"])
+@login_required
+def api_catalog_probe():
+    body = request.get_json(silent=True) or {}
+    endpoint_id = str(body.get("endpoint") or "").strip().strip("/")
+    if not endpoint_id:
+        return jsonify({"ok": False, "error": "Paste a fal endpoint id, e.g. fal-ai/veo3.1/image-to-video"})
+    try:
+        entry = fal_catalog.probe_endpoint(endpoint_id, cfg={
+            "label": body.get("label") or "",
+            "family": body.get("family") or "",
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+    known = [str(c.get("endpoint") or c.get("id") or "") for c in fal_catalog.load_endpoints(FAL_ENDPOINTS_PATH)["endpoints"]]
+    return jsonify({"ok": True, "entry": entry, "already_listed": endpoint_id in known})
+
+
+@app.route("/api/catalog/add", methods=["POST"])
+@login_required
+def api_catalog_add():
+    body = request.get_json(silent=True) or {}
+    try:
+        result = add_fal_catalog_endpoint({
+            "endpoint": str(body.get("endpoint") or "").strip().strip("/"),
+            "label": str(body.get("label") or "").strip(),
+            "family": str(body.get("family") or "").strip().lower(),
+            "family_label": str(body.get("family_label") or "").strip(),
+            "sort_order": body.get("sort_order"),
+        })
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Could not add endpoint: {exc}"})
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------
@@ -5172,7 +5311,7 @@ FAL_SEEDANCE_MODEL_SPECS = [
 ]
 
 
-def _build_video_models_info() -> dict:
+def _build_hardcoded_video_models_info() -> dict:
     info: dict[str, dict] = {}
     for spec in KLING_DIRECT_MODEL_SPECS:
         info[spec["id"]] = {
@@ -5466,9 +5605,31 @@ def _build_video_models_info() -> dict:
     return info
 
 
+def _load_generated_video_catalog() -> dict | None:
+    """The fetched fal catalog, or None when the file is missing or unreadable."""
+    try:
+        return fal_catalog.load_generated(FAL_GENERATED_PATH)
+    except Exception:
+        return None
+
+
+def _build_video_models_info() -> dict:
+    """
+    Hardcoded specs are the base so the app never depends on a successful fetch.
+    Entries from models_video.generated.json replace or extend them by id.
+    """
+    info = _build_hardcoded_video_models_info()
+    generated = _load_generated_video_catalog()
+    if generated:
+        for model_id, entry in (generated.get("models") or {}).items():
+            if isinstance(entry, dict) and entry.get("provider") == "fal":
+                info[str(model_id)] = dict(entry)
+    return info
+
+
 VIDEO_MODELS_INFO = _build_video_models_info()
 
-VIDEO_MODEL_FAMILIES = {
+VIDEO_MODEL_FAMILIES_BASE = {
     "kling": {
         "label": "Kling",
         "default_provider": "kling",
@@ -5529,6 +5690,29 @@ VIDEO_MODEL_FAMILIES = {
 }
 
 
+def _build_video_model_families() -> dict:
+    families = {key: dict(value) for key, value in VIDEO_MODEL_FAMILIES_BASE.items()}
+    generated = _load_generated_video_catalog()
+    if not generated:
+        return families
+    present = {str(info.get("family") or "") for info in VIDEO_MODELS_INFO.values()}
+    for key, spec in (generated.get("families") or {}).items():
+        if not isinstance(spec, dict) or key in families or key not in present:
+            continue
+        providers = dict(spec.get("providers") or {})
+        providers.setdefault("fal", "")
+        families[key] = {
+            "label": str(spec.get("label") or key),
+            "default_provider": str(spec.get("default_provider") or "fal"),
+            "provider_order": list(spec.get("provider_order") or ["fal"]),
+            "providers": providers,
+        }
+    return families
+
+
+VIDEO_MODEL_FAMILIES = _build_video_model_families()
+
+
 def get_video_model_candidates(family_key: str = "", provider_key: str = "", input_mode: str = "") -> list[tuple[str, dict]]:
     mode_key = str(input_mode or "").strip().lower()
     matches = []
@@ -5545,10 +5729,18 @@ def get_video_model_candidates(family_key: str = "", provider_key: str = "", inp
     return matches
 
 
-VIDEO_PRICING = {
-    model_id: {str(duration): 0.0 for duration in VIDEO_DURATION_ALL_OPTIONS}
-    for model_id in VIDEO_MODELS_INFO
-}
+def _build_video_pricing() -> dict:
+    pricing = {
+        model_id: {str(duration): 0.0 for duration in VIDEO_DURATION_ALL_OPTIONS}
+        for model_id in VIDEO_MODELS_INFO
+    }
+    for known_id, known_prices in _VIDEO_PRICING_OVERRIDES.items():
+        pricing[known_id] = dict(known_prices)
+    return pricing
+
+
+_VIDEO_PRICING_OVERRIDES: dict[str, dict] = {}
+VIDEO_PRICING = _VIDEO_PRICING_OVERRIDES
 VIDEO_PRICING["kling-v3-4k-std"] = {str(duration): round(duration * 0.05, 4) for duration in VIDEO_DURATION_ALL_OPTIONS}
 VIDEO_PRICING["kling-v3-4k-pro"] = {str(duration): round(duration * 0.10, 4) for duration in VIDEO_DURATION_ALL_OPTIONS}
 for model_id in (
@@ -5571,6 +5763,106 @@ for model_id in (
 for model_id in (FAL_LTX_VIDEO_T2V_ID, FAL_LTX_VIDEO_I2V_ID):
     VIDEO_PRICING[model_id] = {str(duration): 0.02 for duration in VIDEO_DURATION_ALL_OPTIONS}
 VIDEO_PRICING[FAL_LTX_VIDEO_LORA_I2V_ID] = {str(duration): 0.20 for duration in VIDEO_DURATION_ALL_OPTIONS}
+VIDEO_PRICING = _build_video_pricing()
+
+
+# ---------------------------------------------------------------------------
+# Live fal catalog - refresh / add / reload
+# ---------------------------------------------------------------------------
+_CATALOG_LOCK = threading.Lock()
+
+
+def reload_video_catalog() -> None:
+    """Rebind the module-level video registries after the generated file changes."""
+    global VIDEO_MODELS_INFO, VIDEO_MODEL_FAMILIES, VIDEO_PRICING
+    VIDEO_MODELS_INFO = _build_video_models_info()
+    VIDEO_MODEL_FAMILIES = _build_video_model_families()
+    VIDEO_PRICING = _build_video_pricing()
+
+
+def get_fal_catalog_status() -> dict:
+    endpoints = fal_catalog.load_endpoints(FAL_ENDPOINTS_PATH)
+    generated = _load_generated_video_catalog()
+    return {
+        "endpoints_path": os.path.basename(FAL_ENDPOINTS_PATH),
+        "generated_path": os.path.basename(FAL_GENERATED_PATH),
+        "endpoint_count": len(endpoints.get("endpoints") or []),
+        "generated_at": (generated or {}).get("generated_at") or "",
+        "generated_count": len((generated or {}).get("models") or {}),
+        "live": bool(generated),
+    }
+
+
+def refresh_fal_catalog(endpoint_cfgs: list[dict] | None = None, max_workers: int = 4) -> dict:
+    """
+    Fetch every endpoint in fal_endpoints.json, write models_video.generated.json
+    atomically, reload the registries. If any endpoint fails the generated file
+    is left untouched (all or nothing) and the report says which ones failed.
+    """
+    with _CATALOG_LOCK:
+        endpoints_doc = fal_catalog.load_endpoints(FAL_ENDPOINTS_PATH)
+        cfgs = list(endpoint_cfgs if endpoint_cfgs is not None else endpoints_doc.get("endpoints") or [])
+        if not cfgs:
+            raise ValueError(f"No endpoints listed in {os.path.basename(FAL_ENDPOINTS_PATH)}.")
+        previous_doc = _load_generated_video_catalog() or {}
+        previous_models = dict(previous_doc.get("models") or {})
+        base_specs = _build_hardcoded_video_models_info()
+        models, report = fal_catalog.fetch_all(
+            cfgs,
+            base_specs=base_specs,
+            previous=previous_models,
+            max_workers=max_workers,
+        )
+        failed = [row for row in report if row.get("status") == "failed"]
+        written = False
+        if not failed:
+            fal_catalog.write_json_atomic(
+                FAL_GENERATED_PATH,
+                fal_catalog.build_generated_document(models, endpoints_doc.get("families") or {}),
+            )
+            reload_video_catalog()
+            written = True
+        counts = {key: sum(1 for row in report if row.get("status") == key) for key in ("added", "unchanged", "changed", "failed")}
+        return {
+            "ok": not failed,
+            "written": written,
+            "counts": counts,
+            "report": report,
+            "status": get_fal_catalog_status(),
+        }
+
+
+def add_fal_catalog_endpoint(row: dict) -> dict:
+    """Append one endpoint to fal_endpoints.json (atomic) and regenerate."""
+    endpoint_id = str(row.get("endpoint") or "").strip()
+    if not endpoint_id:
+        raise ValueError("Endpoint id is required.")
+    with _CATALOG_LOCK:
+        endpoints_doc = fal_catalog.load_endpoints(FAL_ENDPOINTS_PATH)
+        existing = [str(cfg.get("endpoint") or cfg.get("id") or "") for cfg in endpoints_doc["endpoints"]]
+        if endpoint_id in existing:
+            raise ValueError(f"{endpoint_id} is already in the catalog.")
+        new_cfg = {"endpoint": endpoint_id}
+        for key in ("id", "label", "family", "input_modes", "video_mode_kind"):
+            if row.get(key):
+                new_cfg[key] = row[key]
+        try:
+            new_cfg["sort_order"] = int(row.get("sort_order") or 900)
+        except Exception:
+            new_cfg["sort_order"] = 900
+        family_key = str(new_cfg.get("family") or "fal-video")
+        new_cfg["family"] = family_key
+        families = endpoints_doc.setdefault("families", {})
+        if family_key not in VIDEO_MODEL_FAMILIES_BASE and family_key not in families:
+            families[family_key] = {
+                "label": str(row.get("family_label") or family_key.replace("-", " ").title()),
+                "default_provider": "fal",
+                "provider_order": ["fal"],
+                "providers": {"fal": endpoint_id},
+            }
+        endpoints_doc["endpoints"].append(new_cfg)
+        fal_catalog.write_json_atomic(FAL_ENDPOINTS_PATH, endpoints_doc)
+    return refresh_fal_catalog()
 
 
 def build_asset_page_context(kind: str) -> dict:
@@ -8181,11 +8473,15 @@ def api_verify_kling_token():
     token = str(data.get("kling_api_token") or "").strip()
     if not token:
         return jsonify({"ok": False, "error": "Kling API token is empty"})
-    headers = build_kling_headers(token)
+    try:
+        headers = build_kling_headers(token)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+    minted = token.count(".") != 2
     try:
         response = requests.get(f"{KLING_BASE_URL}/v1/videos/text2video?pageNum=1&pageSize=1", headers=headers, timeout=45)
         if response.status_code == 200:
-            return jsonify({"ok": True, "message": "Valid Kling token confirmed."})
+            return jsonify({"ok": True, "message": "Valid Kling credentials confirmed." + (" The app will sign a fresh token for each request." if minted else " Note: a pasted JWT expires; ACCESS_KEY:SECRET_KEY is more reliable.")})
         return jsonify({"ok": False, "error": extract_kling_error(response)})
     except requests.exceptions.Timeout:
         return jsonify({"ok": False, "error": "Connection timeout"})
@@ -8654,21 +8950,79 @@ def persist_video_result(result: dict):
     return result
 
 
+def _jwt_b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def mint_kling_jwt(access_key: str, secret_key: str, ttl_seconds: int = 1800) -> str:
+    """
+    Kling's API authenticates with a short-lived HS256 JWT signed by the account's
+    secret key: {"iss": <access key>, "exp": now+30min, "nbf": now-5s}.
+    """
+    import hmac as _hmac
+    now = int(time.time())
+    header = _jwt_b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
+    claims = _jwt_b64url(json.dumps({"iss": access_key, "exp": now + int(ttl_seconds), "nbf": now - 5}, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header}.{claims}"
+    signature = _hmac.new(secret_key.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
+    return f"{signing_input}.{_jwt_b64url(signature)}"
+
+
+def resolve_kling_bearer(token_setting: str) -> str:
+    """
+    Accepts either a ready-made JWT or "ACCESS_KEY:SECRET_KEY" (also | or whitespace
+    separated) and returns a bearer token that is valid right now. Minting per
+    request means a long poll never outlives the token.
+    """
+    token = str(token_setting or "").strip()
+    if not token:
+        raise ValueError("Kling API token not configured. Go to Settings.")
+    if token.count(".") == 2 and not any(sep in token for sep in (":", "|")):
+        return token  # a pre-minted JWT
+    for sep in (":", "|", None):
+        parts = token.split(sep, 1) if sep else token.split(None, 1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            return mint_kling_jwt(parts[0].strip(), parts[1].strip())
+    raise ValueError(
+        "Kling credentials look wrong: enter ACCESS_KEY:SECRET_KEY from the Kling console "
+        "(the app signs a fresh token for every request), or paste a complete JWT."
+    )
+
+
 def build_kling_headers(api_token: str) -> dict:
     return {
-        "Authorization": f"Bearer {api_token}",
+        "Authorization": f"Bearer {resolve_kling_bearer(api_token)}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
 
-def poll_kling_task(api_token: str, endpoint: str, task_id: str, *, timeout_seconds: int = 900) -> dict:
+KLING_POLL_TIMEOUT_SECONDS = 2400  # Omni / v3 jobs on Kling's own queue can sit well past 15 minutes
+
+
+def poll_kling_task(api_token: str, endpoint: str, task_id: str, *, timeout_seconds: int = KLING_POLL_TIMEOUT_SECONDS) -> dict:
     headers = build_kling_headers(api_token)
-    max_attempts = max(10, int(timeout_seconds / 5))
-    for _ in range(max_attempts):
-        response = requests.get(f"{KLING_BASE_URL}{endpoint}/{task_id}", headers=headers, timeout=45)
+    deadline = time.monotonic() + max(60, int(timeout_seconds))
+    transient_errors = 0
+    while time.monotonic() < deadline:
+        try:
+            response = requests.get(f"{KLING_BASE_URL}{endpoint}/{task_id}", headers=headers, timeout=45)
+        except requests.exceptions.RequestException as exc:
+            # A dropped poll is not a failed job - the task is still running on Kling's side.
+            transient_errors += 1
+            if transient_errors > 6:
+                raise RuntimeError(f"Lost contact with Kling while polling task {task_id}: {exc}") from exc
+            threading.Event().wait(10)
+            continue
+        if response.status_code >= 500 or response.status_code == 429:
+            transient_errors += 1
+            if transient_errors > 6:
+                raise RuntimeError(extract_kling_error(response))
+            threading.Event().wait(10)
+            continue
         if response.status_code != 200:
             raise RuntimeError(extract_kling_error(response))
+        transient_errors = 0
         payload = response.json()
         task_status = str(payload.get("data", {}).get("task_status") or payload.get("task_status") or "").strip().lower()
         if task_status in {"succeed", "success"}:
@@ -8683,7 +9037,10 @@ def poll_kling_task(api_token: str, endpoint: str, task_id: str, *, timeout_seco
                 )
             )
         threading.Event().wait(5)
-    raise TimeoutError("Timeout: Kling video generation took too long.")
+    raise TimeoutError(
+        f"Timeout: Kling has not finished task {task_id} after {int(timeout_seconds // 60)} minutes. "
+        "The job is still queued on Kling's side and will be billed if it completes; check your Kling console for the result."
+    )
 
 
 def build_kling_video_from_payload(result_payload: dict) -> dict:
@@ -9055,7 +9412,7 @@ def run_fal_wan_video_job(body: dict, api_key: str) -> dict:
         "resolution": resolution,
         "aspect_ratio": aspect_ratio,
         "enable_safety_checker": safety_checker,
-        "enable_prompt_expansion": True,
+        "enable_prompt_expansion": bool(body.get("videoPromptExpansion", True)),
         "sync_mode": True,
     }
     if negative_prompt:
@@ -9251,6 +9608,272 @@ def run_fal_seedance_video_job(body: dict, api_key: str) -> dict:
         "model_label": model_info.get("label", "Seedance"),
         "params": params_meta,
         "_input_source_image": source_image if str(source_image.get("data") or "").strip() else None,
+        "_input_reference_images": reference_images,
+    }
+
+
+_FAL_ERROR_TYPE_HINTS = {
+    "content_policy_violation": "fal's content moderation rejected this input - it usually means a realistic human likeness, a minor, or restricted content in the image or prompt. Try a different image (stylized, cropped, or generated) or another model.",
+    "value_error": "the value was not accepted by the model's schema.",
+    "missing": "a required field was not sent.",
+}
+
+
+def format_fal_client_error(exc: Exception) -> str:
+    """
+    fal_client raises with the validation payload stringified as a Python repr:
+        [{'loc': ['body', 'image_url'], 'msg': '...', 'type': 'content_policy_violation', 'input': {...}}]
+    Turn that into "image_url: <msg> (content_policy_violation)" and drop the echoed input.
+    """
+    detail = None
+    for candidate in (getattr(exc, "detail", None), *(getattr(exc, "args", None) or [])):
+        if isinstance(candidate, (list, dict)):
+            detail = candidate
+            break
+    if detail is None:
+        text = str(exc).strip()
+        if text.startswith(("[", "{")):
+            try:
+                import ast as _ast
+                detail = _ast.literal_eval(text)
+            except Exception:
+                detail = None
+        if detail is None:
+            return text or "request failed"
+    items = detail if isinstance(detail, list) else [detail]
+    parts = []
+    hints = []
+    for item in items:
+        if not isinstance(item, dict):
+            parts.append(str(item))
+            continue
+        loc = [str(x) for x in (item.get("loc") or []) if str(x) != "body"]
+        msg = str(item.get("msg") or item.get("message") or item.get("detail") or "").strip()
+        kind = str(item.get("type") or "").strip()
+        part = f"{'.'.join(loc)}: {msg}" if loc and msg else (msg or ".".join(loc) or "validation error")
+        if kind:
+            part += f" ({kind})"
+        parts.append(part)
+        if kind in _FAL_ERROR_TYPE_HINTS and _FAL_ERROR_TYPE_HINTS[kind] not in hints:
+            hints.append(_FAL_ERROR_TYPE_HINTS[kind])
+    text = "; ".join(parts) or "request failed"
+    if hints:
+        text += " - " + " ".join(hints)
+    return text
+
+
+def format_fal_schema_duration(duration: int, model_info: dict):
+    """Match the type fal's schema declares: 5, "5" or "5s"."""
+    fmt = str(model_info.get("duration_format") or "string")
+    if fmt == "int":
+        return int(duration)
+    if fmt == "seconds_suffix":
+        return f"{int(duration)}s"
+    return str(int(duration))
+
+
+def _fal_schema_has(model_info: dict, field: str) -> bool:
+    fields = model_info.get("schema_fields") or []
+    return field in fields if fields else True
+
+
+def upload_audio_payload_to_fal(client: fal_client.SyncClient, audio_payload: dict) -> str:
+    if not isinstance(audio_payload, dict):
+        raise ValueError("Choose an audio file for this model.")
+    direct_url = str(audio_payload.get("url") or "").strip()
+    if direct_url.startswith("http://") or direct_url.startswith("https://"):
+        return direct_url
+    data_b64 = str(audio_payload.get("data") or "").strip()
+    if not data_b64:
+        raise ValueError("Choose an audio file for this model.")
+    mime_type = str(audio_payload.get("mime_type") or "audio/mpeg").split(";", 1)[0].strip() or "audio/mpeg"
+    name = os.path.basename(str(audio_payload.get("name") or "audio.mp3")) or "audio.mp3"
+    try:
+        return str(client.upload(base64.b64decode(data_b64, validate=False), mime_type, file_name=name))
+    except Exception as exc:
+        raise RuntimeError(f"Could not upload the audio file: {exc}") from exc
+
+
+def run_fal_schema_video_job(body: dict, api_key: str) -> dict:
+    """
+    Generic fal video runner for catalog-sourced models. The payload is built
+    from the fetched schema: only fields the endpoint declares are sent, with
+    the field names and value types the schema uses. Runs through fal's queue.
+    """
+    body = normalize_video_request(body)
+    input_mode = body.get("videoInputMode", "text")
+    model_id = str(body.get("model") or "").strip()
+    model_info = VIDEO_MODELS_INFO.get(model_id, {})
+    if not model_id or model_info.get("provider") != "fal":
+        raise ValueError("Choose a valid Fal video model.")
+    endpoint = str(model_info.get("fal_endpoint") or model_id).strip()
+    has = lambda field: _fal_schema_has(model_info, field)  # noqa: E731
+
+    prompt = str(body.get("prompt") or "").strip()
+    negative_prompt = str(body.get("negativePrompt") or "").strip()
+    duration = normalize_video_duration(body.get("duration", 5))
+    aspect_ratio = str(body.get("aspectRatio") or "16:9")
+    resolution = str(body.get("resolution") or "720p")
+    generate_audio = bool(body.get("videoGenerateAudio", False))
+    safety_checker = bool(body.get("videoSafetyChecker", True))
+    source_image = body.get("sourceImage") or {}
+    end_image = body.get("endImage") or {}
+    source_video = body.get("sourceVideo") or {}
+    source_audio = body.get("sourceAudio") or {}
+    reference_images = list(body.get("referenceImages") or [])
+    reference_videos = list(body.get("referenceVideos") or [])
+    multi_prompt_shots = parse_multi_prompt_shots(body.get("videoMultiPrompt"), duration) if has("multi_prompt") else []
+
+    client = fal_client.SyncClient(key=api_key)
+    payload: dict = {}
+
+    if multi_prompt_shots:
+        payload["multi_prompt"] = multi_prompt_shots  # fal: prompt OR multi_prompt, never both
+    elif has("prompt"):
+        if not prompt and model_info.get("prompt_required", True):
+            raise ValueError("Please enter a video prompt.")
+        if prompt:
+            payload["prompt"] = prompt
+    if has("negative_prompt") and negative_prompt:
+        payload["negative_prompt"] = negative_prompt
+    if has("duration") and model_info.get("supports_duration", True):
+        payload["duration"] = format_fal_schema_duration(duration, model_info)
+    if has("aspect_ratio") and model_info.get("supports_aspect_ratio", True):
+        payload["aspect_ratio"] = aspect_ratio
+    if has("resolution") and model_info.get("supports_resolution"):
+        payload["resolution"] = resolution
+    if has("generate_audio") and model_info.get("supports_generate_audio"):
+        payload["generate_audio"] = generate_audio
+    if has("enable_safety_checker") and model_info.get("supports_safety_checker"):
+        payload["enable_safety_checker"] = safety_checker
+    if has("enable_prompt_expansion"):
+        payload["enable_prompt_expansion"] = bool(body.get("videoPromptExpansion", True))
+    if has("cfg_scale") and body.get("videoCfgScale") is not None:
+        payload["cfg_scale"] = float(body["videoCfgScale"])
+    if has("seed") and body.get("videoSeed") is not None:
+        payload["seed"] = int(body["videoSeed"])
+    if has("shot_type") and body.get("videoShotType"):
+        payload["shot_type"] = str(body["videoShotType"])
+
+    elements_field = str(model_info.get("elements_field") or "")
+    if elements_field and has(elements_field) and model_info.get("supports_elements"):
+        schema = model_info.get("element_schema") or {}
+        frontal_field = str(schema.get("frontal_field") or "frontal_image_url")
+        refs_field = str(schema.get("references_field") or "reference_image_urls")
+        video_field = str(schema.get("video_field") or "video_url")
+        voice_field = str(schema.get("voice_field") or "voice_id")
+        refs_min = max(0, int(schema.get("references_min", 1) or 0))
+        built = []
+        for index, element in enumerate(body.get("videoElements") or [], start=1):
+            label = element.get("name") or f"Element {index}"
+            item: dict = {}
+            video = element.get("video") or {}
+            if str(video.get("data") or video.get("url") or "").strip():
+                item[video_field] = upload_video_payload_to_fal(client, video)
+            else:
+                frontal = element.get("frontal") or {}
+                refs = [r for r in (element.get("references") or []) if str(r.get("data") or r.get("url") or "").strip()]
+                if not str(frontal.get("data") or frontal.get("url") or "").strip():
+                    raise ValueError(f"{label}: add a frontal image (or a video) for this element.")
+                if len(refs) < refs_min:
+                    raise ValueError(f"{label}: add at least {refs_min} angle reference image{'s' if refs_min != 1 else ''}.")
+                item[frontal_field] = upload_image_payload_to_fal(client, frontal)
+                if refs:
+                    item[refs_field] = [upload_image_payload_to_fal(client, r) for r in refs]
+            if element.get("voice_id"):
+                item[voice_field] = element["voice_id"]
+            built.append(item)
+        if built:
+            payload[elements_field] = built
+
+    start_field = str(model_info.get("start_image_field") or "image_url")
+    end_field = str(model_info.get("end_image_field") or "")
+    ref_field = str(model_info.get("reference_images_field") or "image_urls")
+
+    if input_mode != "text" and model_info.get("supports_start_image"):
+        if str(source_image.get("data") or source_image.get("url") or "").strip():
+            payload[start_field] = upload_image_payload_to_fal(client, source_image)
+        elif model_info.get("start_image_required"):
+            raise ValueError(f"Choose a start image for {model_info.get('label', 'this model')}.")
+
+    if end_field and model_info.get("supports_end_image") and ref_field != end_field:
+        if str(end_image.get("data") or end_image.get("url") or "").strip():
+            payload[end_field] = upload_image_payload_to_fal(client, end_image)
+
+    if input_mode == "reference" and model_info.get("supports_reference_images"):
+        max_refs = max(0, int(model_info.get("max_reference_images", 0) or 0))
+        if max_refs:
+            reference_images = reference_images[:max_refs]
+        usable = [img for img in reference_images if str(img.get("data") or img.get("url") or "").strip()]
+        if ref_field == end_field:
+            # Single end-frame slot exposed through the reference tray (Wan First+Last style).
+            if usable:
+                payload[end_field] = upload_image_payload_to_fal(client, usable[0])
+        elif usable:
+            payload[ref_field] = [upload_image_payload_to_fal(client, img) for img in usable]
+        if not usable and model_info.get("reference_images_required"):
+            raise ValueError(f"Add at least one reference image for {model_info.get('label', 'this model')}.")
+
+    ref_video_field = str(model_info.get("reference_videos_field") or "")
+    if input_mode == "reference" and ref_video_field and model_info.get("supports_reference_videos") and reference_videos:
+        max_ref_videos = max(0, int(model_info.get("max_reference_videos", 0) or 0))
+        if max_ref_videos:
+            reference_videos = reference_videos[:max_ref_videos]
+        urls = [upload_video_payload_to_fal(client, item) for item in reference_videos]
+        if urls:
+            payload[ref_video_field] = urls
+
+    if input_mode == "video" and model_info.get("supports_source_video"):
+        source_field = str(model_info.get("source_video_field") or "video_url")
+        if str(source_video.get("data") or source_video.get("url") or "").strip():
+            payload[source_field] = upload_video_payload_to_fal(client, source_video)
+        elif model_info.get("source_video_required"):
+            raise ValueError(f"Choose a source video for {model_info.get('label', 'this model')}.")
+
+    audio_field = str(model_info.get("driving_audio_field") or "")
+    if audio_field and model_info.get("supports_driving_audio") and str(source_audio.get("data") or source_audio.get("url") or "").strip():
+        payload[audio_field] = upload_audio_payload_to_fal(client, source_audio)
+
+    try:
+        result = client.subscribe(endpoint, arguments=payload, with_logs=False)
+    except Exception as exc:
+        raise RuntimeError(f"Fal {model_info.get('label', endpoint)}: {format_fal_client_error(exc)}") from exc
+    video_item = extract_fal_video_result(result if isinstance(result, dict) else {})
+    if not video_item:
+        raise RuntimeError(f"Fal {model_info.get('label', endpoint)} returned no video for this request.")
+
+    params_meta = merge_request_settings(merge_asset_metadata({
+        "model": model_id,
+        "modelFamily": body.get("modelFamily", model_info.get("family", "")),
+        "model_label": model_info.get("label", model_id),
+        "provider": "fal",
+        "provider_label": "Fal",
+        "fal_endpoint": endpoint,
+        "videoInputMode": input_mode,
+        "duration": duration,
+        "aspectRatio": aspect_ratio if "aspect_ratio" in payload else None,
+        "negativePrompt": negative_prompt,
+        "prompt": prompt,
+        "videoMultiPrompt": body.get("videoMultiPrompt") or "",
+        "resolution": resolution if "resolution" in payload else None,
+        "videoSafetyChecker": safety_checker if "enable_safety_checker" in payload else None,
+        "videoGenerateAudio": generate_audio if "generate_audio" in payload else None,
+        "videoCfgScale": payload.get("cfg_scale"),
+        "videoSeed": payload.get("seed"),
+        "videoHasEndImage": bool(end_field and end_field in payload),
+        "videoShotType": payload.get("shot_type"),
+        "videoElementCount": len(payload.get(str(model_info.get("elements_field") or "elements"), []) or []),
+        "ref_count": len(payload.get(ref_field, []) if isinstance(payload.get(ref_field), list) else []),
+    }, body), body)
+    return {
+        "ok": True,
+        "videos": [video_item],
+        "text": "",
+        "cost": round(float(VIDEO_PRICING.get(model_id, {}).get(str(duration), 0.0)), 4),
+        "model_label": model_info.get("label", model_id),
+        "params": params_meta,
+        "_input_source_image": source_image if str(source_image.get("data") or "").strip() else None,
+        "_input_source_video": source_video if str(source_video.get("data") or source_video.get("url") or "").strip() else None,
         "_input_reference_images": reference_images,
     }
 
@@ -10268,9 +10891,14 @@ def run_video_job(body: dict, config: dict) -> dict:
             return run_fal_wan_video_job(payload, fal_key)
         if family == "ltx-video":
             return run_fal_ltx_video_job(payload, fal_key)
+        model_info = VIDEO_MODELS_INFO.get(str(payload.get("model") or ""), {})
+        if model_info.get("catalog_source") == "fal_schema":
+            return run_fal_schema_video_job(payload, fal_key)
         if family == "seedance":
             return run_fal_seedance_video_job(payload, fal_key)
-        return run_fal_kling_video_job(payload, fal_key)
+        if family == "kling":
+            return run_fal_kling_video_job(payload, fal_key)
+        return run_fal_schema_video_job(payload, fal_key)
 
     if provider == "luma":
         luma_key = (config.get("luma_api_key", "") or "").strip()
@@ -10713,11 +11341,11 @@ if __name__ == "__main__":
         print("  Migrated published/ -> loved/")
     print("\n" + "="*52)
     print(f"  AI API Studio {APP_VERSION}")
-    print("  http://localhost:5000")
+    print("  http://localhost:8000")
     print("  Login: admin / banana2024")
     print("  Max ref images: NB=0, Pro=8, NB2=14")
     print("="*52 + "\n")
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=8000)
 
 
 

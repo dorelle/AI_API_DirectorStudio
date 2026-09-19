@@ -228,6 +228,9 @@
     upscalePane.style.display = upscaleActive ? '' : 'none';
     if (creationControls) creationControls.style.display = creationActive ? '' : 'none';
     if (videoControls) videoControls.style.display = videoActive ? '' : 'none';
+    if (typeof window.setSettingsTab === 'function') {
+      window.setSettingsTab(videoActive ? 'video' : 'image', false);
+    }
     if (videoActive && typeof window.syncVideoModeUi === 'function') {
       window.requestAnimationFrame(() => window.syncVideoModeUi());
     }
@@ -460,6 +463,13 @@
       <!-- Mobile close button -->
       <button class="sidebar-close-btn" id="sidebarCloseBtn" onclick="toggleSidebar()"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Close</button>
 
+    <div class="settings-tabs toggle-tabs" role="tablist" aria-label="Settings panel">
+      <button class="tab-btn active" type="button" id="settingsTabImageBtn" role="tab" aria-selected="true" onclick="setSettingsTab('image', true)">Image</button>
+      <button class="tab-btn" type="button" id="settingsTabVideoBtn" role="tab" aria-selected="false" onclick="setSettingsTab('video', true)">Video</button>
+    </div>
+
+    <div class="settings-tab-pane" id="settingsPaneImage" role="tabpanel">
+
     <div class="ctrl-group">
       <div class="ctrl-label">Output Format</div>
       <div class="toggle-tabs">
@@ -634,6 +644,360 @@
         </div>
       </div>
     </details>
+
+    </div><!-- /settingsPaneImage -->
+
+    <div class="settings-tab-pane" id="settingsPaneVideo" role="tabpanel" style="display:none">
+      <div class="video-settings-empty" id="videoSettingsEmpty">
+        <div class="video-settings-empty-title">No video model selected</div>
+        <div class="video-settings-empty-sub">Switch the workspace to <strong>Video</strong> and pick a model. Its settings and reference tray appear here, built from the model's schema.</div>
+      </div>
+
+      <div id="videoSettingsBody" style="display:none">
+        <div class="ctrl-group video-settings-summary" id="videoSettingsSummary">
+          <div class="ctrl-label">Video model</div>
+          <div class="video-settings-model-name" id="videoSettingsModelName"></div>
+          <div class="video-settings-model-meta" id="videoSettingsModelMeta"></div>
+        </div>
+
+        <div class="ctrl-group" id="videoSideDurationGroup">
+          <div class="ctrl-label">Duration</div>
+          <select id="videoSideDurationSelect" onchange="mirrorVideoSideControl('videoSideDurationSelect', 'videoDurationSelect')"></select>
+        </div>
+
+        <div class="ctrl-group" id="videoSideResolutionGroup">
+          <div class="ctrl-label">Resolution</div>
+          <select id="videoSideResolutionSelect" onchange="mirrorVideoSideControl('videoSideResolutionSelect', 'videoResolutionSelect')"></select>
+        </div>
+
+        <div class="ctrl-group" id="videoSideAspectGroup">
+          <div class="ctrl-label">Aspect Ratio</div>
+          <select id="videoSideAspectSelect" onchange="mirrorVideoSideControl('videoSideAspectSelect', 'videoAspectRatioSelect')"></select>
+        </div>
+
+        <div class="ctrl-group" id="videoSideNegativeGroup">
+          <div class="ctrl-label">Negative prompt</div>
+          <textarea id="videoSideNegativePrompt" class="video-side-textarea" rows="2" placeholder="What to avoid" oninput="mirrorVideoSideText('videoSideNegativePrompt', 'videoNegativePromptInput')"></textarea>
+        </div>
+
+        <div class="ctrl-group" id="videoSideMultiPromptGroup">
+          <div class="ctrl-label-row">
+            <span class="ctrl-label">Multi-shot prompts</span>
+            <span class="ctrl-val" id="videoSideMultiPromptCount">0 shots</span>
+          </div>
+          <textarea id="videoSideMultiPrompt" class="video-side-textarea" rows="3" placeholder="One shot per line. Optional length prefix:&#10;3s: the cat wakes up&#10;the cat stretches" oninput="onVideoSideMultiPromptInput()"></textarea>
+          <div class="ref-note">When shots are listed here the main prompt is not sent; the model takes one or the other.</div>
+        </div>
+
+        <div class="ctrl-group" id="videoSideCfgGroup">
+          <div class="ctrl-label-row">
+            <span class="ctrl-label">CFG scale</span>
+            <span class="ctrl-val" id="videoSideCfgVal">0.50</span>
+          </div>
+          <input type="range" id="videoSideCfgRange" min="0" max="1" step="0.05" value="0.5"
+                 oninput="document.getElementById('videoSideCfgVal').textContent = parseFloat(this.value).toFixed(2); scheduleDraftSave()">
+        </div>
+
+        <div class="ctrl-group" id="videoSideShotTypeGroup">
+          <div class="ctrl-label">Shot type</div>
+          <select id="videoSideShotTypeSelect" onchange="scheduleDraftSave()"></select>
+          <div class="ref-note">"intelligent" lets the model decide the shot structure; "customize" follows your prompt or multi-shot list.</div>
+        </div>
+
+        <div class="ctrl-group" id="videoSideSeedGroup">
+          <div class="ctrl-label">Seed</div>
+          <input type="number" id="videoSideSeedInput" class="video-side-input" placeholder="Random" min="0" step="1" oninput="scheduleDraftSave()">
+        </div>
+
+        <div class="ctrl-group" id="videoSideTogglesGroup">
+          <div class="ctrl-label">Options</div>
+          <div class="toggle-row">
+            <div class="toggle-item" id="videoSideGenerateAudioRow">
+              <span class="toggle-icon">A</span>
+              <span>Generate audio</span>
+              <label class="switch">
+                <input type="checkbox" id="videoSideGenerateAudioToggle" onchange="mirrorVideoSideToggle('videoSideGenerateAudioToggle', 'videoGenerateAudioToggle')">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item" id="videoSideSafetyRow">
+              <span class="toggle-icon">S</span>
+              <span>Safety checker</span>
+              <label class="switch">
+                <input type="checkbox" id="videoSideSafetyToggle" checked onchange="mirrorVideoSideToggle('videoSideSafetyToggle', 'videoSafetyCheckerToggle')">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item" id="videoSideOutputSafetyRow">
+              <span class="toggle-icon">S</span>
+              <span>Output safety checker</span>
+              <label class="switch">
+                <input type="checkbox" id="videoSideOutputSafetyToggle" checked onchange="mirrorVideoSideToggle('videoSideOutputSafetyToggle', 'videoOutputSafetyCheckerToggle')">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item" id="videoSidePromptExpansionRow">
+              <span class="toggle-icon">P</span>
+              <span>Prompt expansion</span>
+              <label class="switch">
+                <input type="checkbox" id="videoSidePromptExpansionToggle" checked onchange="scheduleDraftSave()">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item" id="videoSideMultiShotsRow">
+              <span class="toggle-icon">M</span>
+              <span>Multi shots</span>
+              <label class="switch">
+                <input type="checkbox" id="videoSideMultiShotsToggle" onchange="mirrorVideoSideToggle('videoSideMultiShotsToggle', 'videoWanMultiShotsToggle')">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="ctrl-group video-settings-tray" id="videoSettingsTray">
+          <div class="ctrl-label">Reference tray</div>
+          <div class="ref-note" id="videoSettingsTrayHint"></div>
+          <div class="video-source-column" id="videoSourceColumn">
+            <div class="video-source-strip ref-strip video-source-strip-empty ref-strip-empty-state" id="videoSourceStrip"
+                 ondragover="onVideoSourceDragOver(event)"
+                 ondragleave="onVideoSourceDragLeave(event)"
+                 ondrop="onVideoSourceDrop(event)">
+              <div class="video-source-toolbar ref-strip-toolbar">
+                <span class="video-source-strip-label" id="videoSourceStripLabel">Start image</span>
+                <div class="ref-actions video-source-actions">
+                  <button class="ref-action-btn" type="button" id="videoSourceUploadBtn" onclick="triggerVideoSourceInput()" title="Upload source image">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+                      <polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn" type="button" id="videoSourceLibraryBtn" onclick="openLovedPicker('video')" title="Choose from Loved images or saved references">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
+                      <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn ref-action-at" type="button" id="videoSourceElementsBtn" onclick="openElements('video')" title="Elements - asset library (@)">@</button>
+                  <button class="ref-action-btn" type="button" id="videoSourceViewerBtn" onclick="useSelectedViewerAssetAsVideoSource()" title="Use selected viewer image">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
+                    </svg>
+                  </button>
+                  <input type="file" id="videoSourceInput" accept="image/*" style="display:none" onchange="onVideoSourceInputChange(event)">
+                </div>
+                <div class="ref-toolbar-right">
+                  <button class="ref-describe-btn" type="button" id="videoSourceDescribeBtn" onclick="describeVideoStartImageWithGemini()" title="Use Gemini to describe the current start image">
+                    Describe image
+                  </button>
+                </div>
+              </div>
+              <div class="video-source-empty ref-strip-empty" id="videoSourceEmpty">
+                <span class="ref-strip-empty-title" id="videoSourceEmptyTitle">Drop source image here</span>
+                <span class="ref-strip-empty-sub" id="videoSourceEmptySub">Use one start image for image-to-video. Drag from the main image, history, Explorer, or another browser window.</span>
+              </div>
+              <div class="video-source-preview" id="videoSourcePreviewWrap" style="display:none">
+                <img id="videoSourcePreview" alt="Video source preview" style="display:none">
+                <video id="videoSourceVideoPreview" controls muted playsinline preload="metadata" style="display:none"></video>
+              </div>
+              <div class="video-source-meta ref-strip-meta">
+                <div class="video-source-meta-left ref-strip-meta-left">
+                  <span id="videoSourceCounter" class="ref-counter">0/1</span>
+                  <span id="videoSourceName" class="ref-mask-hint">Drop or choose one start image</span>
+                </div>
+                <button class="ref-clear-all" id="clearVideoSourceBtn" type="button" onclick="clearVideoSource()" style="display:none">Clear</button>
+              </div>
+            </div>
+            <div class="video-source-strip ref-strip video-source-strip-empty ref-strip-empty-state" id="videoEndStrip" style="display:none"
+                 ondragover="onVideoEndDragOver(event)"
+                 ondragleave="onVideoEndDragLeave(event)"
+                 ondrop="onVideoEndDrop(event)">
+              <div class="video-source-toolbar ref-strip-toolbar">
+                <span class="video-source-strip-label">End frame</span>
+                <div class="ref-actions video-source-actions">
+                  <button class="ref-action-btn" type="button" onclick="triggerVideoEndInput()" title="Upload end frame image">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+                      <polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn" type="button" onclick="openLovedPicker('video-end')" title="Choose from Loved images or saved references">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
+                      <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn ref-action-at" type="button" onclick="openElements('video-end')" title="Elements - asset library (@)">@</button>
+                  <button class="ref-action-btn" type="button" onclick="useSelectedViewerImageAsVideoEnd()" title="Use selected viewer image as the end frame">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
+                    </svg>
+                  </button>
+                  <input type="file" id="videoEndInput" accept="image/*" style="display:none" onchange="onVideoEndInputChange(event)">
+                </div>
+              </div>
+              <div class="video-source-empty ref-strip-empty" id="videoEndEmpty">
+                <span class="ref-strip-empty-title">Drop end frame here</span>
+                <span class="ref-strip-empty-sub" id="videoEndEmptySub">Optional last frame. The model interpolates from the start frame to this image.</span>
+              </div>
+              <div class="video-source-preview" id="videoEndPreviewWrap" style="display:none">
+                <img id="videoEndPreview" alt="Video end frame preview">
+              </div>
+              <div class="video-source-meta ref-strip-meta">
+                <div class="video-source-meta-left ref-strip-meta-left">
+                  <span id="videoEndCounter" class="ref-counter">0/1</span>
+                  <span id="videoEndName" class="ref-mask-hint">Optional: add one end frame</span>
+                </div>
+                <button class="ref-clear-all" id="clearVideoEndBtn" type="button" onclick="clearVideoEnd()" style="display:none">Clear</button>
+              </div>
+            </div>
+            <div class="video-asset-panel ref-strip" id="videoAssetPanel">
+            <div class="ref-strip-toolbar">
+              <span class="video-source-strip-label">Attached assets</span>
+              <div class="ref-toolbar-right">
+                <span class="ref-counter" id="videoAssetCount">0</span>
+              </div>
+            </div>
+            <div class="video-asset-empty" id="videoAssetEmpty">Nothing attached yet. Everything you add above is listed here in the order it is sent to the model.</div>
+            <div class="video-asset-list" id="videoAssetList"></div>
+            <div class="ref-note" id="videoAssetHint"></div>
+          </div>
+            <div class="video-ref-strip ref-strip" id="videoElementsStrip" style="display:none">
+              <div class="ref-strip-toolbar">
+                <span class="video-source-strip-label">Elements</span>
+                <div class="ref-actions video-source-actions">
+                  <button class="ref-action-btn video-element-add-btn" type="button" id="videoElementAddBtn" onclick="addVideoElement()" title="Add an element (a character or object)">+ Element</button>
+                </div>
+                <div class="ref-toolbar-right">
+                  <span class="ref-counter" id="videoElementsCounter">0 of 0</span>
+                </div>
+              </div>
+              <div class="ref-strip-empty" id="videoElementsEmpty">
+                <span class="ref-strip-empty-title">No elements yet</span>
+                <span class="ref-strip-empty-sub" id="videoElementsEmptySub">An element is a character or object: one frontal image plus angle references, or a short video. Refer to it in the prompt as @Element1.</span>
+              </div>
+              <div class="video-elements-list" id="videoElementsList"></div>
+              <div class="ref-strip-meta">
+                <div class="ref-strip-meta-left">
+                  <span class="ref-mask-hint" id="videoElementsHint"></span>
+                </div>
+              </div>
+              <input type="file" id="videoElementFileInput" accept="image/*" multiple style="display:none" onchange="onVideoElementFileInputChange(event)">
+              <input type="file" id="videoElementVideoInput" accept="video/*" style="display:none" onchange="onVideoElementVideoInputChange(event)">
+            </div>
+            <div class="video-ref-strip ref-strip ref-strip-empty-state" id="videoReferenceStrip" style="display:none"
+                 ondragover="onVideoReferenceDragOver(event)"
+                 ondragleave="onVideoReferenceDragLeave(event)"
+                 ondrop="onVideoReferenceDrop(event)">
+              <div class="ref-strip-toolbar">
+                <span class="video-source-strip-label">Reference images</span>
+                <div class="ref-actions video-source-actions">
+                  <button class="ref-action-btn" type="button" onclick="triggerVideoReferenceInput()" title="Upload reference image">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+                      <polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn" type="button" onclick="openLovedPicker('video-refs')" title="Choose video reference images from Loved images or saved references">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
+                      <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn ref-action-at" type="button" onclick="openElements('video-refs')" title="Elements - asset library (@)">@</button>
+                  <button class="ref-action-btn" type="button" onclick="useSelectedViewerImageAsVideoReference()" title="Use selected viewer image as a video reference">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
+                    </svg>
+                  </button>
+                  <input type="file" id="videoReferenceInput" accept="image/*" multiple style="display:none" onchange="onVideoReferenceInputChange(event)">
+                </div>
+                <div class="ref-toolbar-right">
+                  <button class="ref-describe-btn" type="button" id="videoReferenceDescribeBtn" onclick="describeVideoReferenceImagesWithGemini()" title="Use Gemini to describe the current video reference images">
+                    Describe refs
+                  </button>
+                </div>
+              </div>
+              <div class="ref-strip-empty" id="videoReferenceEmpty">
+                <span class="ref-strip-empty-title">Drop reference images here</span>
+                <span class="ref-strip-empty-sub" id="videoReferenceEmptySub">Add reference images for style or identity. Drag from the main image, history, Explorer, or another browser window.</span>
+              </div>
+              <div class="ref-strip-inner" id="videoReferenceInner"></div>
+              <div class="ref-strip-meta">
+                <div class="ref-strip-meta-left">
+                  <span id="videoReferenceCounter" class="ref-counter">0/0</span>
+                  <span class="ref-mask-hint" id="videoReferenceHint">Reference images are sent only for supported Kling video models.</span>
+                </div>
+                <button class="ref-clear-all" type="button" onclick="clearAllVideoReferenceImages()">Clear All</button>
+              </div>
+            </div>
+            <div class="video-ref-strip ref-strip ref-strip-empty-state" id="videoReferenceVideoStrip" style="display:none"
+                 ondragover="onVideoReferenceVideoDragOver(event)"
+                 ondragleave="onVideoReferenceVideoDragLeave(event)"
+                 ondrop="onVideoReferenceVideoDrop(event)">
+              <div class="ref-strip-toolbar">
+                <span class="video-source-strip-label">Reference videos</span>
+                <div class="ref-actions video-source-actions">
+                  <button class="ref-action-btn" type="button" onclick="triggerVideoReferenceVideoInput()" title="Upload reference video">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
+                    </svg>
+                  </button>
+                  <button class="ref-action-btn" type="button" onclick="useSelectedViewerVideoAsWanReferenceVideo()" title="Use selected viewer video as a Wan reference video">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
+                    </svg>
+                  </button>
+                  <input type="file" id="videoReferenceVideoInput" accept="video/*" multiple style="display:none" onchange="onVideoReferenceVideoInputChange(event)">
+                </div>
+              </div>
+              <div class="ref-strip-empty" id="videoReferenceVideoEmpty">
+                <span class="ref-strip-empty-title">Drop reference videos here</span>
+                <span class="ref-strip-empty-sub" id="videoReferenceVideoEmptySub">Add reference videos for motion or subject behavior guidance.</span>
+              </div>
+              <div class="ref-strip-inner" id="videoReferenceVideoInner"></div>
+              <div class="ref-strip-meta">
+                <div class="ref-strip-meta-left">
+                  <span id="videoReferenceVideoCounter" class="ref-counter">0/0</span>
+                  <span class="ref-mask-hint" id="videoReferenceVideoHint">Reference videos are sent only for Wan reference-to-video.</span>
+                </div>
+                <button class="ref-clear-all" type="button" onclick="clearAllVideoReferenceVideos()">Clear All</button>
+              </div>
+            </div>
+            <div class="video-source-strip ref-strip video-source-strip-empty ref-strip-empty-state" id="videoAudioStrip" style="display:none"
+                 ondragover="onVideoAudioDragOver(event)"
+                 ondragleave="onVideoAudioDragLeave(event)"
+                 ondrop="onVideoAudioDrop(event)">
+              <div class="video-source-toolbar ref-strip-toolbar">
+                <span class="video-source-strip-label">Driving audio</span>
+                <div class="ref-actions video-source-actions">
+                  <button class="ref-action-btn" type="button" onclick="triggerVideoAudioInput()" title="Upload driving audio">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle>
+                    </svg>
+                  </button>
+                  <input type="file" id="videoAudioInput" accept="audio/*" style="display:none" onchange="onVideoAudioInputChange(event)">
+                </div>
+              </div>
+              <div class="video-source-empty ref-strip-empty" id="videoAudioEmpty">
+                <span class="ref-strip-empty-title">Drop driving audio here</span>
+                <span class="ref-strip-empty-sub">Add optional WAV or MP3 driving audio for Wan 2.7 supported modes.</span>
+              </div>
+              <div class="video-source-preview" id="videoAudioPreviewWrap" style="display:none">
+                <audio id="videoAudioPreview" controls preload="metadata"></audio>
+              </div>
+              <div class="video-source-meta ref-strip-meta">
+                <div class="video-source-meta-left ref-strip-meta-left">
+                  <span id="videoAudioCounter" class="ref-counter">0/1</span>
+                  <span id="videoAudioName" class="ref-mask-hint">Drop or choose one driving audio file</span>
+                </div>
+                <button class="ref-clear-all" id="clearVideoAudioBtn" type="button" onclick="clearVideoDrivingAudio()" style="display:none">Clear</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /settingsPaneVideo -->
 
   </aside>
 
@@ -982,167 +1346,6 @@
               <div class="prompt-compose-resizer video-prompt-resizer" id="videoPromptResizer" title="Drag to resize negative prompt" role="separator" aria-orientation="vertical" aria-label="Resize negative prompt"></div>
               <div class="prompt-wrap video-prompt-box video-negative-box">
                 <textarea id="videoNegativePromptInput" class="video-negative-input" placeholder="Optional negative prompt" rows="2" oninput="autoResize(this)"></textarea>
-              </div>
-            </div>
-            <div class="prompt-compose-resizer video-compose-resizer" id="videoComposeResizer" title="Drag to resize video source panel" role="separator" aria-orientation="vertical" aria-label="Resize video source panel"></div>
-            <div class="video-source-column" id="videoSourceColumn">
-              <div class="video-source-strip ref-strip video-source-strip-empty ref-strip-empty-state" id="videoSourceStrip"
-                   ondragover="onVideoSourceDragOver(event)"
-                   ondragleave="onVideoSourceDragLeave(event)"
-                   ondrop="onVideoSourceDrop(event)">
-                <div class="video-source-toolbar ref-strip-toolbar">
-                  <span class="video-source-strip-label" id="videoSourceStripLabel">Start image</span>
-                  <div class="ref-actions video-source-actions">
-                    <button class="ref-action-btn" type="button" id="videoSourceUploadBtn" onclick="triggerVideoSourceInput()" title="Upload source image">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-                        <polyline points="21 15 16 10 5 21"/>
-                      </svg>
-                    </button>
-                    <button class="ref-action-btn" type="button" id="videoSourceLibraryBtn" onclick="openLovedPicker('video')" title="Choose from Loved images or saved references">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
-                        <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
-                      </svg>
-                    </button>
-                    <button class="ref-action-btn ref-action-at" type="button" id="videoSourceElementsBtn" onclick="openElements('video')" title="Elements - asset library (@)">@</button>
-                    <button class="ref-action-btn" type="button" id="videoSourceViewerBtn" onclick="useSelectedViewerAssetAsVideoSource()" title="Use selected viewer image">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
-                      </svg>
-                    </button>
-                    <input type="file" id="videoSourceInput" accept="image/*" style="display:none" onchange="onVideoSourceInputChange(event)">
-                  </div>
-                  <div class="ref-toolbar-right">
-                    <button class="ref-describe-btn" type="button" id="videoSourceDescribeBtn" onclick="describeVideoStartImageWithGemini()" title="Use Gemini to describe the current start image">
-                      Describe image
-                    </button>
-                  </div>
-                </div>
-                <div class="video-source-empty ref-strip-empty" id="videoSourceEmpty">
-                  <span class="ref-strip-empty-title" id="videoSourceEmptyTitle">Drop source image here</span>
-                  <span class="ref-strip-empty-sub" id="videoSourceEmptySub">Use one start image for image-to-video. Drag from the main image, history, Explorer, or another browser window.</span>
-                </div>
-                <div class="video-source-preview" id="videoSourcePreviewWrap" style="display:none">
-                  <img id="videoSourcePreview" alt="Video source preview" style="display:none">
-                  <video id="videoSourceVideoPreview" controls muted playsinline preload="metadata" style="display:none"></video>
-                </div>
-                <div class="video-source-meta ref-strip-meta">
-                  <div class="video-source-meta-left ref-strip-meta-left">
-                    <span id="videoSourceCounter" class="ref-counter">0/1</span>
-                    <span id="videoSourceName" class="ref-mask-hint">Drop or choose one start image</span>
-                  </div>
-                  <button class="ref-clear-all" id="clearVideoSourceBtn" type="button" onclick="clearVideoSource()" style="display:none">Clear</button>
-                </div>
-              </div>
-              <div class="video-ref-strip ref-strip ref-strip-empty-state" id="videoReferenceStrip" style="display:none"
-                   ondragover="onVideoReferenceDragOver(event)"
-                   ondragleave="onVideoReferenceDragLeave(event)"
-                   ondrop="onVideoReferenceDrop(event)">
-                <div class="ref-strip-toolbar">
-                  <span class="video-source-strip-label">Reference images</span>
-                  <div class="ref-actions video-source-actions">
-                    <button class="ref-action-btn" type="button" onclick="triggerVideoReferenceInput()" title="Upload reference image">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-                        <polyline points="21 15 16 10 5 21"/>
-                      </svg>
-                    </button>
-                    <button class="ref-action-btn" type="button" onclick="openLovedPicker('video-refs')" title="Choose video reference images from Loved images or saved references">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
-                        <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
-                      </svg>
-                    </button>
-                    <button class="ref-action-btn ref-action-at" type="button" onclick="openElements('video-refs')" title="Elements - asset library (@)">@</button>
-                    <button class="ref-action-btn" type="button" onclick="useSelectedViewerImageAsVideoReference()" title="Use selected viewer image as a video reference">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
-                      </svg>
-                    </button>
-                    <input type="file" id="videoReferenceInput" accept="image/*" multiple style="display:none" onchange="onVideoReferenceInputChange(event)">
-                  </div>
-                  <div class="ref-toolbar-right">
-                    <button class="ref-describe-btn" type="button" id="videoReferenceDescribeBtn" onclick="describeVideoReferenceImagesWithGemini()" title="Use Gemini to describe the current video reference images">
-                      Describe refs
-                    </button>
-                  </div>
-                </div>
-                <div class="ref-strip-empty" id="videoReferenceEmpty">
-                  <span class="ref-strip-empty-title">Drop reference images here</span>
-                  <span class="ref-strip-empty-sub" id="videoReferenceEmptySub">Add reference images for style or identity. Drag from the main image, history, Explorer, or another browser window.</span>
-                </div>
-                <div class="ref-strip-inner" id="videoReferenceInner"></div>
-                <div class="ref-strip-meta">
-                  <div class="ref-strip-meta-left">
-                    <span id="videoReferenceCounter" class="ref-counter">0/0</span>
-                    <span class="ref-mask-hint" id="videoReferenceHint">Reference images are sent only for supported Kling video models.</span>
-                  </div>
-                  <button class="ref-clear-all" type="button" onclick="clearAllVideoReferenceImages()">Clear All</button>
-                </div>
-              </div>
-              <div class="video-ref-strip ref-strip ref-strip-empty-state" id="videoReferenceVideoStrip" style="display:none"
-                   ondragover="onVideoReferenceVideoDragOver(event)"
-                   ondragleave="onVideoReferenceVideoDragLeave(event)"
-                   ondrop="onVideoReferenceVideoDrop(event)">
-                <div class="ref-strip-toolbar">
-                  <span class="video-source-strip-label">Reference videos</span>
-                  <div class="ref-actions video-source-actions">
-                    <button class="ref-action-btn" type="button" onclick="triggerVideoReferenceVideoInput()" title="Upload reference video">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
-                      </svg>
-                    </button>
-                    <button class="ref-action-btn" type="button" onclick="useSelectedViewerVideoAsWanReferenceVideo()" title="Use selected viewer video as a Wan reference video">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 5h16v14H4z"></path><path d="M9 9l6 3-6 3z"></path>
-                      </svg>
-                    </button>
-                    <input type="file" id="videoReferenceVideoInput" accept="video/*" multiple style="display:none" onchange="onVideoReferenceVideoInputChange(event)">
-                  </div>
-                </div>
-                <div class="ref-strip-empty" id="videoReferenceVideoEmpty">
-                  <span class="ref-strip-empty-title">Drop reference videos here</span>
-                  <span class="ref-strip-empty-sub" id="videoReferenceVideoEmptySub">Add reference videos for motion or subject behavior guidance.</span>
-                </div>
-                <div class="ref-strip-inner" id="videoReferenceVideoInner"></div>
-                <div class="ref-strip-meta">
-                  <div class="ref-strip-meta-left">
-                    <span id="videoReferenceVideoCounter" class="ref-counter">0/0</span>
-                    <span class="ref-mask-hint" id="videoReferenceVideoHint">Reference videos are sent only for Wan reference-to-video.</span>
-                  </div>
-                  <button class="ref-clear-all" type="button" onclick="clearAllVideoReferenceVideos()">Clear All</button>
-                </div>
-              </div>
-              <div class="video-source-strip ref-strip video-source-strip-empty ref-strip-empty-state" id="videoAudioStrip" style="display:none"
-                   ondragover="onVideoAudioDragOver(event)"
-                   ondragleave="onVideoAudioDragLeave(event)"
-                   ondrop="onVideoAudioDrop(event)">
-                <div class="video-source-toolbar ref-strip-toolbar">
-                  <span class="video-source-strip-label">Driving audio</span>
-                  <div class="ref-actions video-source-actions">
-                    <button class="ref-action-btn" type="button" onclick="triggerVideoAudioInput()" title="Upload driving audio">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle>
-                      </svg>
-                    </button>
-                    <input type="file" id="videoAudioInput" accept="audio/*" style="display:none" onchange="onVideoAudioInputChange(event)">
-                  </div>
-                </div>
-                <div class="video-source-empty ref-strip-empty" id="videoAudioEmpty">
-                  <span class="ref-strip-empty-title">Drop driving audio here</span>
-                  <span class="ref-strip-empty-sub">Add optional WAV or MP3 driving audio for Wan 2.7 supported modes.</span>
-                </div>
-                <div class="video-source-preview" id="videoAudioPreviewWrap" style="display:none">
-                  <audio id="videoAudioPreview" controls preload="metadata"></audio>
-                </div>
-                <div class="video-source-meta ref-strip-meta">
-                  <div class="video-source-meta-left ref-strip-meta-left">
-                    <span id="videoAudioCounter" class="ref-counter">0/1</span>
-                    <span id="videoAudioName" class="ref-mask-hint">Drop or choose one driving audio file</span>
-                  </div>
-                  <button class="ref-clear-all" id="clearVideoAudioBtn" type="button" onclick="clearVideoDrivingAudio()" style="display:none">Clear</button>
-                </div>
               </div>
             </div>
           </div>
@@ -1967,6 +2170,9 @@ const UPSCALE_IMAGE_COST_PER_MEGAPIXEL = 0.001;
 let outputMode    = "images_text";
 let refImages     = [];           // [{mime_type, data, previewUrl, name}]
 let videoSourceImage = null;
+let videoEndImage = null;
+let videoElements = [];
+let videoElementFileTarget = null;
 let videoSourceVideo = null;
 let videoReferenceImages = [];
 let videoDrivingAudio = null;
@@ -2997,6 +3203,7 @@ function onVideoInputModeChange() {
 }
 
 function onVideoConcreteModelChange() {
+  applyVideoModelDefaults();
   syncVideoModeUi();
   scheduleDraftSave();
 }
@@ -3227,8 +3434,1024 @@ function syncVideoModeUi() {
   renderVideoReferenceStrip();
   renderVideoReferenceVideoStrip();
   syncVideoDrivingAudioUi();
+  syncVideoEndUi();
   syncVideoComposeLayout();
+  renderVideoSettingsPanel();
+  renderVideoElements();
+  renderVideoAssetPanel();
   void updateCostEstimates();
+}
+
+
+// ============================================================
+// Settings sidebar tabs (Image = untouched original panel, Video = schema-driven)
+// ============================================================
+let settingsTabManual = "";
+
+function setSettingsTab(tab, manual = false) {
+  const wanted = tab === "video" ? "video" : "image";
+  const imageBtn = document.getElementById("settingsTabImageBtn");
+  const videoBtn = document.getElementById("settingsTabVideoBtn");
+  const imagePane = document.getElementById("settingsPaneImage");
+  const videoPane = document.getElementById("settingsPaneVideo");
+  if (!imageBtn || !videoBtn || !imagePane || !videoPane) return;
+  if (manual) {
+    settingsTabManual = wanted;
+  } else {
+    settingsTabManual = "";
+  }
+  imageBtn.classList.toggle("active", wanted === "image");
+  imageBtn.setAttribute("aria-selected", wanted === "image" ? "true" : "false");
+  videoBtn.classList.toggle("active", wanted === "video");
+  videoBtn.setAttribute("aria-selected", wanted === "video" ? "true" : "false");
+  imagePane.style.display = wanted === "image" ? "" : "none";
+  videoPane.style.display = wanted === "video" ? "" : "none";
+  if (wanted === "video") {
+    window.requestAnimationFrame(() => renderVideoSettingsPanel());
+  }
+}
+window.setSettingsTab = setSettingsTab;
+
+function videoModelHasSchemaField(info, field) {
+  const fields = Array.isArray(info?.schema_fields) ? info.schema_fields : null;
+  return fields ? fields.includes(field) : false;
+}
+
+function getVideoSupportsEndImage(selection = getCurrentVideoSelection()) {
+  const info = selection?.modelInfo || {};
+  const inputMode = String(selection?.inputMode || "").trim().toLowerCase();
+  if (!info.supports_end_image || !info.end_image_field) return false;
+  if (inputMode === "text") return false;
+  // Wan First+Last exposes its end frame through the reference tray instead.
+  if (info.reference_images_field && info.reference_images_field === info.end_image_field) return false;
+  return true;
+}
+
+function formatVideoReferenceToken(index, selection = getCurrentVideoSelection()) {
+  const token = String(selection?.modelInfo?.reference_prompt_token || "");
+  if (token && token.includes("{n}")) return token.replace("{n}", String(index));
+  return `#${index}`;
+}
+
+function copyVideoSelectOptions(fromId, toId) {
+  const from = document.getElementById(fromId);
+  const to = document.getElementById(toId);
+  if (!from || !to) return;
+  const current = String(from.value || "");
+  to.innerHTML = "";
+  Array.from(from.options).forEach(opt => {
+    const clone = document.createElement("option");
+    clone.value = opt.value;
+    clone.textContent = opt.textContent;
+    to.appendChild(clone);
+  });
+  to.value = current;
+}
+
+function mirrorVideoSideControl(sideId, mainId) {
+  const side = document.getElementById(sideId);
+  const main = document.getElementById(mainId);
+  if (!side || !main) return;
+  main.value = side.value;
+  main.dispatchEvent(new Event("change", { bubbles: true }));
+  scheduleDraftSave();
+  void updateCostEstimates();
+}
+
+function mirrorVideoSideToggle(sideId, mainId) {
+  const side = document.getElementById(sideId);
+  const main = document.getElementById(mainId);
+  if (!side || !main) return;
+  main.checked = side.checked;
+  main.dispatchEvent(new Event("change", { bubbles: true }));
+  scheduleDraftSave();
+  void updateCostEstimates();
+}
+
+function mirrorVideoSideText(sideId, mainId) {
+  const side = document.getElementById(sideId);
+  const main = document.getElementById(mainId);
+  if (!side || !main) return;
+  main.value = side.value;
+  if (typeof autoResize === "function") autoResize(main);
+  scheduleDraftSave();
+}
+
+function onVideoSideMultiPromptInput() {
+  const el = document.getElementById("videoSideMultiPrompt");
+  const count = document.getElementById("videoSideMultiPromptCount");
+  const shots = String(el?.value || "").split("\n").map(line => line.trim()).filter(Boolean).length;
+  if (count) count.textContent = `${shots} shot${shots === 1 ? "" : "s"}`;
+  scheduleDraftSave();
+}
+
+function applyVideoModelDefaults() {
+  const selection = getCurrentVideoSelection();
+  const info = selection.modelInfo || {};
+  if (info.supports_generate_audio && typeof info.generate_audio_default === "boolean") {
+    const toggle = document.getElementById("videoGenerateAudioToggle");
+    if (toggle) toggle.checked = info.generate_audio_default;
+  }
+}
+
+function renderVideoSettingsPanel() {
+  const empty = document.getElementById("videoSettingsEmpty");
+  const body = document.getElementById("videoSettingsBody");
+  if (!empty || !body) return;
+  const isVideoMode = typeof isVideoPromptMode === "function" ? isVideoPromptMode() : false;
+  const selection = getCurrentVideoSelection();
+  const info = selection.modelInfo || {};
+  const hasModel = Boolean(selection.modelId && Object.keys(info).length);
+  if (!isVideoMode || !hasModel) {
+    empty.style.display = "";
+    body.style.display = "none";
+    return;
+  }
+  empty.style.display = "none";
+  body.style.display = "";
+
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? "" : "none";
+  };
+
+  const name = document.getElementById("videoSettingsModelName");
+  const meta = document.getElementById("videoSettingsModelMeta");
+  if (name) name.textContent = String(info.label || selection.modelId);
+  if (meta) {
+    const bits = [];
+    bits.push(String(info.provider_label || selection.provider || ""));
+    bits.push(String(info.fal_endpoint || selection.modelId || ""));
+    bits.push(info.catalog_source === "fal_schema" ? "live schema" : "built-in spec");
+    meta.textContent = bits.filter(Boolean).join(" · ");
+  }
+
+  // Selects mirror the toolbar (the toolbar stays the source of truth for the request).
+  const resolutionInfo = getVideoResolutionInfo(selection);
+  show("videoSideDurationGroup", info.supports_duration !== false);
+  show("videoSideResolutionGroup", Boolean(resolutionInfo.show));
+  show("videoSideAspectGroup", info.supports_aspect_ratio !== false);
+  copyVideoSelectOptions("videoDurationSelect", "videoSideDurationSelect");
+  copyVideoSelectOptions("videoResolutionSelect", "videoSideResolutionSelect");
+  copyVideoSelectOptions("videoAspectRatioSelect", "videoSideAspectSelect");
+
+  const negativeVisible = getVideoSupportsNegativePrompt(selection);
+  show("videoSideNegativeGroup", negativeVisible);
+  const sideNeg = document.getElementById("videoSideNegativePrompt");
+  const mainNeg = document.getElementById("videoNegativePromptInput");
+  if (sideNeg && mainNeg && document.activeElement !== sideNeg) sideNeg.value = mainNeg.value;
+
+  show("videoSideMultiPromptGroup", Boolean(info.supports_multi_prompt));
+  if (info.supports_multi_prompt) onVideoSideMultiPromptInput();
+  show("videoSideCfgGroup", Boolean(info.supports_cfg_scale));
+  show("videoSideSeedGroup", Boolean(info.supports_seed));
+
+  const audioVisible = Boolean(info.supports_generate_audio);
+  const safetyVisible = Boolean(info.supports_safety_checker);
+  const outputSafetyVisible = Boolean(info.supports_output_safety_checker);
+  const promptExpansionVisible = videoModelHasSchemaField(info, "enable_prompt_expansion");
+  const multiShotsVisible = getVideoSupportsWanMultiShots(selection);
+  show("videoSideGenerateAudioRow", audioVisible);
+  show("videoSideSafetyRow", safetyVisible);
+  show("videoSideOutputSafetyRow", outputSafetyVisible);
+  show("videoSidePromptExpansionRow", promptExpansionVisible);
+  show("videoSideMultiShotsRow", multiShotsVisible);
+  show("videoSideTogglesGroup", audioVisible || safetyVisible || outputSafetyVisible || promptExpansionVisible || multiShotsVisible);
+  const pairs = [
+    ["videoSideGenerateAudioToggle", "videoGenerateAudioToggle"],
+    ["videoSideSafetyToggle", "videoSafetyCheckerToggle"],
+    ["videoSideOutputSafetyToggle", "videoOutputSafetyCheckerToggle"],
+    ["videoSideMultiShotsToggle", "videoWanMultiShotsToggle"],
+  ];
+  pairs.forEach(([sideId, mainId]) => {
+    const side = document.getElementById(sideId);
+    const main = document.getElementById(mainId);
+    if (side && main) side.checked = Boolean(main.checked);
+  });
+
+  // Tray hint: which slots this model actually takes.
+  const hint = document.getElementById("videoSettingsTrayHint");
+  if (hint) {
+    const live = info.catalog_source === "fal_schema";
+    const parts = [];
+    if (getVideoSupportsStartImage(selection)) parts.push(`start frame${live ? ` (${info.start_image_field}${info.start_image_required ? ", required" : ""})` : ""}`);
+    if (getVideoSupportsEndImage(selection)) parts.push(`end frame (${info.end_image_field})`);
+    if (getVideoSupportsElements(selection)) parts.push(`up to ${info.max_elements || 0} elements (${info.elements_field})`);
+    if (getVideoSupportsReferenceImages(selection)) parts.push(`${info.max_reference_images || 0} reference images${live ? ` (${info.reference_images_field})` : ""}`);
+    if (getVideoSupportsReferenceVideos(selection)) parts.push(`${info.max_reference_videos || 0} reference videos`);
+    if (getVideoSupportsSourceVideo(selection)) parts.push("source video");
+    if (getVideoSupportsDrivingAudio(selection)) parts.push("driving audio");
+    let text = parts.length
+      ? `${info.label || "This model"} takes: ${parts.join(", ")}.`
+      : `${info.label || "This model"} is text-only in this mode - no attachments are sent.`;
+    if (!live && String(selection.provider || "") !== "fal") {
+      text += ` This is the ${info.provider_label || selection.provider} direct API using the built-in spec. Switch Provider to Fal for the live-schema version (end frame, elements, exact field names).`;
+    } else if (!live) {
+      text += " Built-in spec (no fetched schema yet - refresh the catalog in Settings).";
+    }
+    hint.textContent = text;
+  }
+  syncVideoShotTypeUi(info);
+  syncVideoPromptLimits(info);
+}
+
+function syncVideoShotTypeUi(info) {
+  const group = document.getElementById("videoSideShotTypeGroup");
+  const select = document.getElementById("videoSideShotTypeSelect");
+  if (!group || !select) return;
+  const options = Array.isArray(info.shot_type_options) ? info.shot_type_options : [];
+  const visible = Boolean(info.supports_shot_type) && options.length > 0;
+  group.style.display = visible ? "" : "none";
+  if (!visible) return;
+  const current = String(select.value || info.shot_type_default || options[0]);
+  if (Array.from(select.options).map(o => o.value).join("|") !== options.join("|")) {
+    select.innerHTML = "";
+    options.forEach(value => {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = value;
+      select.appendChild(opt);
+    });
+  }
+  select.value = options.includes(current) ? current : (info.shot_type_default || options[0]);
+}
+
+function syncVideoPromptLimits(info) {
+  const negSide = document.getElementById("videoSideNegativePrompt");
+  const negMain = document.getElementById("videoNegativePromptInput");
+  const placeholder = info.negative_prompt_default ? `Default: ${info.negative_prompt_default}` : "What to avoid";
+  if (negSide) negSide.placeholder = placeholder;
+  if (negMain) negMain.placeholder = info.negative_prompt_default ? `Optional negative prompt (default: ${info.negative_prompt_default})` : "Optional negative prompt";
+  const prompt = document.getElementById("videoPromptInput");
+  if (prompt) {
+    if (info.prompt_max_length) prompt.maxLength = info.prompt_max_length; else prompt.removeAttribute("maxlength");
+  }
+  if (negMain) {
+    if (info.negative_prompt_max_length) negMain.maxLength = info.negative_prompt_max_length; else negMain.removeAttribute("maxlength");
+  }
+}
+
+function getVideoSupportsElements(selection = getCurrentVideoSelection()) {
+  const info = selection?.modelInfo || {};
+  const inputMode = String(selection?.inputMode || "").trim().toLowerCase();
+  return Boolean(info.supports_elements && info.element_schema) && inputMode !== "text";
+}
+
+function formatVideoElementToken(index, selection = getCurrentVideoSelection()) {
+  const token = String(selection?.modelInfo?.elements_prompt_token || "@Element{n}");
+  return token.includes("{n}") ? token.replace("{n}", String(index)) : `@Element${index}`;
+}
+
+// ---- Image constraint validation (from fal's x-fal limits) -----------------
+function estimateImagePayloadBytes(payload) {
+  const data = String(payload?.data || "");
+  if (!data) return 0;
+  const padding = data.endsWith("==") ? 2 : (data.endsWith("=") ? 1 : 0);
+  return Math.floor(data.length * 3 / 4) - padding;
+}
+
+function loadImageDimensions(src) {
+  return new Promise(resolve => {
+    if (!src) { resolve(null); return; }
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function validateImageAgainstConstraints(payload, constraints, label) {
+  if (!payload || !constraints) return null;
+  const bytes = estimateImagePayloadBytes(payload);
+  if (constraints.max_file_size && bytes > constraints.max_file_size) {
+    return `${label}: ${(bytes / 1048576).toFixed(1)} MB is over the ${(constraints.max_file_size / 1048576).toFixed(0)} MB limit for this field.`;
+  }
+  const src = payload.previewUrl || (payload.data ? `data:${payload.mime_type || "image/png"};base64,${payload.data}` : (payload.url || ""));
+  const dims = await loadImageDimensions(src);
+  if (!dims) return null;
+  if ((constraints.min_width && dims.width < constraints.min_width) || (constraints.min_height && dims.height < constraints.min_height)) {
+    return `${label}: ${dims.width}×${dims.height}px is too small - the model needs at least ${constraints.min_width || 0}×${constraints.min_height || 0}px.`;
+  }
+  if ((constraints.max_width && dims.width > constraints.max_width) || (constraints.max_height && dims.height > constraints.max_height)) {
+    return `${label}: ${dims.width}×${dims.height}px is too large - the model allows at most ${constraints.max_width || "?"}×${constraints.max_height || "?"}px.`;
+  }
+  const ratio = dims.height ? dims.width / dims.height : 0;
+  if (constraints.min_aspect_ratio && ratio < constraints.min_aspect_ratio) {
+    return `${label}: aspect ratio ${ratio.toFixed(2)} is narrower than the model's minimum ${constraints.min_aspect_ratio}.`;
+  }
+  if (constraints.max_aspect_ratio && ratio > constraints.max_aspect_ratio) {
+    return `${label}: aspect ratio ${ratio.toFixed(2)} is wider than the model's maximum ${constraints.max_aspect_ratio}.`;
+  }
+  return null;
+}
+
+function getVideoImageConstraints(fieldName, selection = getCurrentVideoSelection()) {
+  const info = selection?.modelInfo || {};
+  const all = info.image_constraints || {};
+  return fieldName && all[fieldName] ? all[fieldName] : null;
+}
+
+// Validate after attach so every entry path (drop, upload, picker, viewer) is covered;
+// an invalid image is removed again with a readable message.
+function validateVideoSlotImageAsync(slot) {
+  const selection = getCurrentVideoSelection();
+  const info = selection.modelInfo || {};
+  if (slot === "start" && videoSourceImage) {
+    const target = videoSourceImage;
+    validateImageAgainstConstraints(target, getVideoImageConstraints(info.start_image_field, selection), "Start frame").then(err => {
+      if (err && videoSourceImage === target) { showError(err); setVideoSourceImage(null); }
+    });
+  } else if (slot === "end" && videoEndImage) {
+    const target = videoEndImage;
+    validateImageAgainstConstraints(target, getVideoImageConstraints(info.end_image_field, selection), "End frame").then(err => {
+      if (err && videoEndImage === target) { showError(err); setVideoEndImage(null); }
+    });
+  } else if (slot === "ref") {
+    const constraints = getVideoImageConstraints(info.reference_images_field, selection);
+    if (!constraints) return;
+    videoReferenceImages.forEach(img => {
+      if (img.__validated) return;
+      img.__validated = true;
+      validateImageAgainstConstraints(img, constraints, "Reference image").then(err => {
+        const idx = videoReferenceImages.indexOf(img);
+        if (err && idx >= 0) {
+          showError(err);
+          if (img.previewUrl && img.previewUrl.startsWith("blob:")) URL.revokeObjectURL(img.previewUrl);
+          videoReferenceImages.splice(idx, 1);
+          renderVideoReferenceStrip();
+        }
+      });
+    });
+  }
+}
+
+// ---- Elements (nested: frontal + angle references, or a video) --------------
+function getVideoElementSchema(selection = getCurrentVideoSelection()) {
+  return selection?.modelInfo?.element_schema || null;
+}
+
+function addVideoElement() {
+  const selection = getCurrentVideoSelection();
+  const info = selection.modelInfo || {};
+  const max = Math.max(0, parseInt(info.max_elements || 0, 10));
+  if (!getVideoSupportsElements(selection)) {
+    showError("The selected video model does not take elements.");
+    return;
+  }
+  if (max && videoElements.length >= max) {
+    showError(`Limit reached: this model accepts at most ${max} elements.`);
+    return;
+  }
+  videoElements.push({ name: "", frontal: null, references: [], video: null, voice_id: "" });
+  renderVideoElements();
+  scheduleDraftSave();
+}
+
+function removeVideoElement(index) {
+  const el = videoElements[index];
+  if (!el) return;
+  [el.frontal, ...(el.references || []), el.video].forEach(item => {
+    if (item && item.previewUrl && String(item.previewUrl).startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
+  });
+  videoElements.splice(index, 1);
+  renderVideoElements();
+  scheduleDraftSave();
+}
+
+function moveVideoElement(index, delta) {
+  const target = index + delta;
+  if (index < 0 || target < 0 || index >= videoElements.length || target >= videoElements.length) return;
+  const [item] = videoElements.splice(index, 1);
+  videoElements.splice(target, 0, item);
+  renderVideoElements();
+  scheduleDraftSave();
+}
+
+function cloneVideoElementImage(image, fallbackName) {
+  return {
+    mime_type: image.mime_type || "image/png",
+    data: image.data || "",
+    name: image.name || fallbackName,
+    previewUrl: image.previewUrl || (image.data ? `data:${image.mime_type || "image/png"};base64,${image.data}` : ""),
+    archive_date: image.archive_date || "",
+    archive_filename: image.archive_filename || "",
+    original_url: image.original_url || "",
+  };
+}
+
+async function assignVideoElementImage(index, slot, image) {
+  const element = videoElements[index];
+  const schema = getVideoElementSchema();
+  if (!element || !schema) return false;
+  const label = `${formatVideoElementToken(index + 1)} ${slot === "frontal" ? "frontal" : "angle reference"}`;
+  const constraints = (schema.image_constraints || {})[slot === "frontal" ? schema.frontal_field : schema.references_field] || null;
+  const record = cloneVideoElementImage(image, slot === "frontal" ? "element-frontal.png" : "element-reference.png");
+  const err = await validateImageAgainstConstraints(record, constraints, label);
+  if (err) {
+    showError(err);
+    return false;
+  }
+  if (slot === "frontal") {
+    element.frontal = record;
+    element.video = null;
+  } else {
+    const max = Math.max(0, parseInt(schema.references_max || 3, 10));
+    if (max && element.references.length >= max) {
+      showError(`${formatVideoElementToken(index + 1)}: at most ${max} angle references.`);
+      return false;
+    }
+    element.references.push(record);
+    element.video = null;
+  }
+  renderVideoElements();
+  scheduleDraftSave();
+  return true;
+}
+
+function removeVideoElementReference(index, refIndex) {
+  const element = videoElements[index];
+  if (!element) return;
+  const item = element.references[refIndex];
+  if (item && item.previewUrl && String(item.previewUrl).startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
+  element.references.splice(refIndex, 1);
+  renderVideoElements();
+  scheduleDraftSave();
+}
+
+function clearVideoElementFrontal(index) {
+  const element = videoElements[index];
+  if (!element) return;
+  if (element.frontal && element.frontal.previewUrl && String(element.frontal.previewUrl).startsWith("blob:")) URL.revokeObjectURL(element.frontal.previewUrl);
+  element.frontal = null;
+  renderVideoElements();
+  scheduleDraftSave();
+}
+
+function clearVideoElementVideo(index) {
+  const element = videoElements[index];
+  if (!element) return;
+  if (element.video && element.video.previewUrl && String(element.video.previewUrl).startsWith("blob:")) URL.revokeObjectURL(element.video.previewUrl);
+  element.video = null;
+  renderVideoElements();
+  scheduleDraftSave();
+}
+
+function triggerVideoElementFiles(index, slot) {
+  videoElementFileTarget = { index, slot };
+  const input = document.getElementById(slot === "video" ? "videoElementVideoInput" : "videoElementFileInput");
+  if (!input) return;
+  input.multiple = slot === "reference";
+  input.click();
+}
+
+async function onVideoElementFileInputChange(event) {
+  const target = videoElementFileTarget;
+  const files = Array.from(event.target?.files || []).filter(file => String(file.type || "").startsWith("image/"));
+  event.target.value = "";
+  if (!target || !files.length) return;
+  try {
+    for (const file of files) {
+      const payload = await readImageFileAsPayload(file);
+      payload.previewUrl = URL.createObjectURL(file);
+      const ok = await assignVideoElementImage(target.index, target.slot, payload);
+      if (!ok || target.slot === "frontal") break;
+    }
+  } catch (error) {
+    showError(error.message || "Could not load that image for the element.");
+  }
+}
+
+async function onVideoElementVideoInputChange(event) {
+  const target = videoElementFileTarget;
+  const file = event.target?.files?.[0];
+  event.target.value = "";
+  if (!target || !file) return;
+  try {
+    if (!String(file.type || "").startsWith("video/")) throw new Error("Choose a video file for this element.");
+    const payload = await readVideoFileAsPayload(file);
+    const element = videoElements[target.index];
+    if (!element) return;
+    if (videoElements.some((el, i) => i !== target.index && el.video)) {
+      throw new Error("Only one element per request can be a video.");
+    }
+    element.video = {
+      mime_type: payload.mime_type || "video/mp4",
+      data: payload.data || "",
+      name: payload.name || file.name || "element-video.mp4",
+      url: payload.url || "",
+      previewUrl: payload.previewUrl || "",
+    };
+    element.frontal = null;
+    element.references = [];
+    renderVideoElements();
+    scheduleDraftSave();
+  } catch (error) {
+    showError(error.message || "Could not load that video for the element.");
+  }
+}
+
+async function useSelectedViewerImageForVideoElement(index, slot) {
+  const entry = getSelectedGalleryImageEntry();
+  if (!entry || !entry.image) {
+    showError("Select an image in the viewer or History first.");
+    return;
+  }
+  try {
+    const payload = await ensureImagePayload(entry.image);
+    await assignVideoElementImage(index, slot, {
+      mime_type: payload.mime_type || "image/png",
+      data: payload.data || "",
+      name: entry.image.name || entry.image.gen_filename || "viewer-image.png",
+      archive_date: entry.image.archive_date || "",
+      archive_filename: entry.image.archive_filename || "",
+      original_url: entry.image.original_url || "",
+    });
+  } catch (error) {
+    showError(error.message || "Could not use the selected image.");
+  }
+}
+
+function onVideoElementZoneDragOver(event) {
+  event.preventDefault();
+  event.currentTarget.classList.add("drag-over");
+}
+
+function onVideoElementZoneDragLeave(event) {
+  const zone = event.currentTarget;
+  if (!event.relatedTarget || !zone.contains(event.relatedTarget)) zone.classList.remove("drag-over");
+}
+
+async function onVideoElementZoneDrop(event, index, slot) {
+  event.preventDefault();
+  event.currentTarget.classList.remove("drag-over");
+  const dt = event.dataTransfer;
+  try {
+    const imageFiles = Array.from(dt?.files || []).filter(file => String(file.type || "").startsWith("image/"));
+    if (imageFiles.length) {
+      for (const file of imageFiles) {
+        const payload = await readImageFileAsPayload(file);
+        payload.previewUrl = URL.createObjectURL(file);
+        const ok = await assignVideoElementImage(index, slot, payload);
+        if (!ok || slot === "frontal") break;
+      }
+      return;
+    }
+    const dropped = extractDroppedImageCandidates(dt);
+    if (dropped.length) {
+      for (const candidate of dropped) {
+        const payload = await resolveRefImageSource(candidate.url, candidate.name);
+        const ok = await assignVideoElementImage(index, slot, payload);
+        if (!ok || slot === "frontal") break;
+      }
+      return;
+    }
+    if (gallerySelectedImageId) await useSelectedViewerImageForVideoElement(index, slot);
+  } catch (error) {
+    showError(error.message || "Could not import that image into the element.");
+  }
+}
+
+function renderVideoElements() {
+  const strip = document.getElementById("videoElementsStrip");
+  const list = document.getElementById("videoElementsList");
+  const empty = document.getElementById("videoElementsEmpty");
+  const counter = document.getElementById("videoElementsCounter");
+  const hint = document.getElementById("videoElementsHint");
+  const addBtn = document.getElementById("videoElementAddBtn");
+  if (!strip || !list || !empty || !counter) return;
+  const selection = getCurrentVideoSelection();
+  const info = selection.modelInfo || {};
+  const schema = getVideoElementSchema(selection);
+  const supported = getVideoSupportsElements(selection);
+  strip.style.display = supported ? "" : "none";
+  if (!supported) return;
+  const max = Math.max(0, parseInt(info.max_elements || 0, 10));
+  if (max && videoElements.length > max) videoElements = videoElements.slice(0, max);
+  const refsMax = Math.max(0, parseInt(schema.references_max || 3, 10));
+  const refsMin = Math.max(0, parseInt(schema.references_min || 1, 10));
+  counter.textContent = `${videoElements.length} of ${max || "∞"}`;
+  if (addBtn) addBtn.disabled = Boolean(max && videoElements.length >= max);
+  empty.style.display = videoElements.length ? "none" : "";
+  strip.classList.toggle("ref-strip-empty-state", videoElements.length === 0);
+  list.innerHTML = "";
+  videoElements.forEach((element, index) => {
+    const token = formatVideoElementToken(index + 1, selection);
+    const card = document.createElement("div");
+    card.className = "video-element-card";
+
+    const head = document.createElement("div");
+    head.className = "video-element-head";
+    const badge = document.createElement("span");
+    badge.className = "video-asset-badge";
+    badge.textContent = token;
+    badge.title = `Write ${token} in the prompt to reference this element`;
+    const name = document.createElement("input");
+    name.type = "text";
+    name.className = "video-element-name";
+    name.placeholder = `Name (e.g. "red jacket woman")`;
+    name.value = element.name || "";
+    name.oninput = () => { element.name = name.value; scheduleDraftSave(); renderVideoAssetPanel(); };
+    const actions = document.createElement("div");
+    actions.className = "video-asset-actions";
+    const up = document.createElement("button"); up.type = "button"; up.className = "video-asset-btn"; up.textContent = "▲"; up.disabled = index === 0; up.title = "Move up"; up.onclick = () => moveVideoElement(index, -1);
+    const down = document.createElement("button"); down.type = "button"; down.className = "video-asset-btn"; down.textContent = "▼"; down.disabled = index >= videoElements.length - 1; down.title = "Move down"; down.onclick = () => moveVideoElement(index, 1);
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "video-asset-btn video-asset-btn-remove"; remove.innerHTML = "&times;"; remove.title = "Remove element"; remove.onclick = () => removeVideoElement(index);
+    actions.append(up, down, remove);
+    head.append(badge, name, actions);
+    card.appendChild(head);
+
+    if (element.video) {
+      const videoRow = document.createElement("div");
+      videoRow.className = "video-element-video";
+      const v = document.createElement("video");
+      v.controls = true; v.muted = true; v.playsInline = true; v.preload = "metadata";
+      v.src = element.video.previewUrl || element.video.url || `data:${element.video.mime_type || "video/mp4"};base64,${element.video.data || ""}`;
+      const meta = document.createElement("div");
+      meta.className = "video-element-slot-label";
+      meta.textContent = `Video element → ${schema.video_field || "video_url"} · ${element.video.name || ""}`;
+      const clear = document.createElement("button"); clear.type = "button"; clear.className = "ref-clear-all"; clear.textContent = "Use images instead"; clear.onclick = () => clearVideoElementVideo(index);
+      videoRow.append(v, meta, clear);
+      card.appendChild(videoRow);
+    } else {
+      // Frontal slot
+      const frontalZone = document.createElement("div");
+      frontalZone.className = "video-element-zone" + (element.frontal ? "" : " video-element-zone-empty");
+      frontalZone.ondragover = onVideoElementZoneDragOver;
+      frontalZone.ondragleave = onVideoElementZoneDragLeave;
+      frontalZone.ondrop = (event) => onVideoElementZoneDrop(event, index, "frontal");
+      const frontalLabel = document.createElement("div");
+      frontalLabel.className = "video-element-slot-label";
+      frontalLabel.textContent = `Frontal (main view) → ${schema.frontal_field}`;
+      frontalZone.appendChild(frontalLabel);
+      const frontalBody = document.createElement("div");
+      frontalBody.className = "video-element-slot-body";
+      if (element.frontal) {
+        const thumb = document.createElement("div");
+        thumb.className = "ref-thumb";
+        const img = document.createElement("img");
+        img.src = element.frontal.previewUrl || `data:${element.frontal.mime_type};base64,${element.frontal.data}`;
+        img.alt = element.frontal.name || "frontal";
+        const x = document.createElement("button"); x.type = "button"; x.className = "ref-thumb-remove"; x.innerHTML = "&times;"; x.onclick = (ev) => { ev.stopPropagation(); clearVideoElementFrontal(index); };
+        thumb.append(img, x);
+        frontalBody.appendChild(thumb);
+      } else {
+        const drop = document.createElement("span");
+        drop.className = "video-element-drop-text";
+        drop.textContent = "Drop the frontal image here";
+        frontalBody.appendChild(drop);
+      }
+      const frontalBtns = document.createElement("div");
+      frontalBtns.className = "ref-actions video-source-actions";
+      const fUp = document.createElement("button"); fUp.type = "button"; fUp.className = "ref-action-btn"; fUp.title = "Upload frontal image"; fUp.textContent = "⤒"; fUp.onclick = () => triggerVideoElementFiles(index, "frontal");
+      const fView = document.createElement("button"); fView.type = "button"; fView.className = "ref-action-btn"; fView.title = "Use selected viewer image as frontal"; fView.textContent = "▣"; fView.onclick = () => useSelectedViewerImageForVideoElement(index, "frontal");
+      const fVideo = document.createElement("button"); fVideo.type = "button"; fVideo.className = "ref-action-btn"; fVideo.title = "Use a video for this element instead of images"; fVideo.textContent = "▶"; fVideo.onclick = () => triggerVideoElementFiles(index, "video");
+      frontalBtns.append(fUp, fView);
+      if (schema.video_field) frontalBtns.appendChild(fVideo);
+      frontalBody.appendChild(frontalBtns);
+      frontalZone.appendChild(frontalBody);
+      card.appendChild(frontalZone);
+
+      // Angle references
+      const refZone = document.createElement("div");
+      refZone.className = "video-element-zone" + (element.references.length ? "" : " video-element-zone-empty");
+      refZone.ondragover = onVideoElementZoneDragOver;
+      refZone.ondragleave = onVideoElementZoneDragLeave;
+      refZone.ondrop = (event) => onVideoElementZoneDrop(event, index, "reference");
+      const refLabel = document.createElement("div");
+      refLabel.className = "video-element-slot-label";
+      refLabel.textContent = `Angle references → ${schema.references_field} · ${element.references.length} of ${refsMax}${refsMin ? ` (min ${refsMin})` : ""}`;
+      refZone.appendChild(refLabel);
+      const refBody = document.createElement("div");
+      refBody.className = "video-element-slot-body";
+      if (element.references.length) {
+        const grid = document.createElement("div");
+        grid.className = "video-element-ref-grid";
+        element.references.forEach((ref, refIndex) => {
+          const thumb = document.createElement("div");
+          thumb.className = "ref-thumb";
+          const img = document.createElement("img");
+          img.src = ref.previewUrl || `data:${ref.mime_type};base64,${ref.data}`;
+          img.alt = ref.name || `angle ${refIndex + 1}`;
+          const idx = document.createElement("span"); idx.className = "ref-thumb-index"; idx.textContent = String(refIndex + 1);
+          const x = document.createElement("button"); x.type = "button"; x.className = "ref-thumb-remove"; x.innerHTML = "&times;"; x.onclick = (ev) => { ev.stopPropagation(); removeVideoElementReference(index, refIndex); };
+          thumb.append(img, idx, x);
+          grid.appendChild(thumb);
+        });
+        refBody.appendChild(grid);
+      } else {
+        const drop = document.createElement("span");
+        drop.className = "video-element-drop-text";
+        drop.textContent = "Drop images of the same subject from other angles";
+        refBody.appendChild(drop);
+      }
+      const refBtns = document.createElement("div");
+      refBtns.className = "ref-actions video-source-actions";
+      const rUp = document.createElement("button"); rUp.type = "button"; rUp.className = "ref-action-btn"; rUp.title = "Upload angle references"; rUp.textContent = "⤒"; rUp.disabled = Boolean(refsMax && element.references.length >= refsMax); rUp.onclick = () => triggerVideoElementFiles(index, "reference");
+      const rView = document.createElement("button"); rView.type = "button"; rView.className = "ref-action-btn"; rView.title = "Use selected viewer image as an angle reference"; rView.textContent = "▣"; rView.disabled = rUp.disabled; rView.onclick = () => useSelectedViewerImageForVideoElement(index, "reference");
+      refBtns.append(rUp, rView);
+      refBody.appendChild(refBtns);
+      refZone.appendChild(refBody);
+      card.appendChild(refZone);
+    }
+    list.appendChild(card);
+  });
+  if (hint) {
+    hint.textContent = videoElements.length
+      ? `Elements are sent in this order. Write ${formatVideoElementToken(1, selection)}${videoElements.length > 1 ? `, ${formatVideoElementToken(2, selection)}` : ""}${videoElements.length > 2 ? ", ..." : ""} in the prompt to place them. Each needs a frontal image plus ${refsMin}-${refsMax} angle references, or one video.`
+      : `Up to ${max || "several"} elements. Each is one character or object.`;
+  }
+  renderVideoAssetPanel();
+}
+
+
+
+// ---- Attached assets panel: every attachment in send order, reorderable ----
+function getVideoAttachedAssetRows(selection = getCurrentVideoSelection()) {
+  const info = selection.modelInfo || {};
+  const rows = [];
+  if (getVideoSupportsStartImage(selection) && videoSourceImage && (videoSourceImage.data || videoSourceImage.previewUrl)) {
+    rows.push({ kind: "start", label: "Start frame", field: info.start_image_field || "image_url", fixed: true,
+      thumb: videoSourceImage.previewUrl || `data:${videoSourceImage.mime_type};base64,${videoSourceImage.data}`, name: videoSourceImage.name || "start image", isVideo: false });
+  }
+  if (getVideoSupportsSourceVideo(selection) && videoSourceVideo && (videoSourceVideo.data || videoSourceVideo.url || videoSourceVideo.previewUrl)) {
+    rows.push({ kind: "source-video", label: "Source video", field: info.source_video_field || "video_url", fixed: true,
+      thumb: "", name: videoSourceVideo.name || "source video", isVideo: true });
+  }
+  if (getVideoSupportsEndImage(selection) && videoEndImage && (videoEndImage.data || videoEndImage.previewUrl)) {
+    rows.push({ kind: "end", label: "End frame", field: info.end_image_field || "end_image_url", fixed: true,
+      thumb: videoEndImage.previewUrl || `data:${videoEndImage.mime_type};base64,${videoEndImage.data}`, name: videoEndImage.name || "end frame", isVideo: false });
+  }
+  if (getVideoSupportsElements(selection)) {
+    videoElements.forEach((element, idx) => {
+      const first = element.frontal || (element.references || [])[0] || null;
+      rows.push({ kind: "element", index: idx, count: videoElements.length,
+        label: formatVideoElementToken(idx + 1, selection), field: info.elements_field || "elements", fixed: false,
+        thumb: first ? (first.previewUrl || `data:${first.mime_type};base64,${first.data}`) : "",
+        name: (element.name || `Element ${idx + 1}`) + (element.video ? " (video)" : ` (${element.frontal ? 1 : 0} frontal + ${(element.references || []).length} angles)`),
+        isVideo: Boolean(element.video) });
+    });
+  }
+  if (getVideoSupportsReferenceImages(selection)) {
+    videoReferenceImages.forEach((img, idx) => {
+      rows.push({ kind: "ref-image", index: idx, count: videoReferenceImages.length,
+        label: formatVideoReferenceToken(idx + 1, selection), field: info.reference_images_field || "image_urls", fixed: false,
+        thumb: img.previewUrl || `data:${img.mime_type};base64,${img.data}`, name: img.name || getVideoReferencePayloadName(idx + 1), isVideo: false });
+    });
+  }
+  if (getVideoSupportsReferenceVideos(selection)) {
+    videoReferenceVideos.forEach((video, idx) => {
+      rows.push({ kind: "ref-video", index: idx, count: videoReferenceVideos.length,
+        label: `@Video${idx + 1}`, field: info.reference_videos_field || "video_urls", fixed: false,
+        thumb: "", name: video.name || getVideoReferenceVideoPayloadName(idx + 1), isVideo: true });
+    });
+  }
+  if (getVideoSupportsDrivingAudio(selection) && videoDrivingAudio && (videoDrivingAudio.data || videoDrivingAudio.url)) {
+    rows.push({ kind: "audio", label: "Driving audio", field: info.driving_audio_field || "audio_url", fixed: true,
+      thumb: "", name: videoDrivingAudio.name || "audio", isVideo: false, isAudio: true });
+  }
+  return rows;
+}
+
+function moveVideoAttachedAsset(kind, index, delta) {
+  if (kind === "element") { moveVideoElement(index, delta); return; }
+  const list = kind === "ref-image" ? videoReferenceImages : (kind === "ref-video" ? videoReferenceVideos : null);
+  if (!list) return;
+  const target = index + delta;
+  if (index < 0 || index >= list.length || target < 0 || target >= list.length) return;
+  const [item] = list.splice(index, 1);
+  list.splice(target, 0, item);
+  if (kind === "ref-image") renderVideoReferenceStrip(); else renderVideoReferenceVideoStrip();
+  renderVideoAssetPanel();
+  scheduleDraftSave();
+}
+
+function removeVideoAttachedAsset(kind, index) {
+  if (kind === "start") { clearVideoSource(); return; }
+  if (kind === "source-video") { clearVideoSource(); return; }
+  if (kind === "end") { clearVideoEnd(); return; }
+  if (kind === "audio") { clearVideoDrivingAudio(); return; }
+  if (kind === "element") { removeVideoElement(index); return; }
+  if (kind === "ref-image") {
+    const img = videoReferenceImages[index];
+    if (!img) return;
+    if (img.previewUrl && img.previewUrl.startsWith("blob:")) URL.revokeObjectURL(img.previewUrl);
+    videoReferenceImages.splice(index, 1);
+    renderVideoReferenceStrip();
+  } else if (kind === "ref-video") {
+    const video = videoReferenceVideos[index];
+    if (!video) return;
+    if (video.previewUrl && String(video.previewUrl).startsWith("blob:")) URL.revokeObjectURL(video.previewUrl);
+    videoReferenceVideos.splice(index, 1);
+    renderVideoReferenceVideoStrip();
+  }
+  renderVideoAssetPanel();
+  scheduleDraftSave();
+}
+
+function renderVideoAssetPanel() {
+  const panel = document.getElementById("videoAssetPanel");
+  const list = document.getElementById("videoAssetList");
+  const empty = document.getElementById("videoAssetEmpty");
+  const count = document.getElementById("videoAssetCount");
+  const hint = document.getElementById("videoAssetHint");
+  if (!panel || !list || !empty || !count) return;
+  const selection = getCurrentVideoSelection();
+  const rows = getVideoAttachedAssetRows(selection);
+  list.innerHTML = "";
+  count.textContent = String(rows.length);
+  empty.style.display = rows.length ? "none" : "";
+  rows.forEach(row => {
+    const el = document.createElement("div");
+    el.className = "video-asset-row" + (row.fixed ? " video-asset-row-fixed" : "");
+    const thumb = document.createElement("div");
+    thumb.className = "video-asset-thumb";
+    if (row.thumb) {
+      const img = document.createElement("img");
+      img.src = row.thumb;
+      img.alt = row.name;
+      thumb.appendChild(img);
+    } else {
+      thumb.textContent = row.isAudio ? "♪" : (row.isVideo ? "▶" : "");
+    }
+    const meta = document.createElement("div");
+    meta.className = "video-asset-meta";
+    const badge = document.createElement("span");
+    badge.className = "video-asset-badge" + (row.fixed ? " video-asset-badge-fixed" : "");
+    badge.textContent = row.label;
+    const name = document.createElement("span");
+    name.className = "video-asset-name";
+    name.textContent = row.name;
+    name.title = `${row.name} → ${row.field}`;
+    const field = document.createElement("span");
+    field.className = "video-asset-field";
+    field.textContent = row.field;
+    meta.append(badge, name, field);
+    const actions = document.createElement("div");
+    actions.className = "video-asset-actions";
+    if (!row.fixed) {
+      const up = document.createElement("button");
+      up.type = "button"; up.className = "video-asset-btn"; up.textContent = "▲"; up.title = "Move up (earlier in the order)";
+      up.disabled = row.index === 0;
+      up.onclick = () => moveVideoAttachedAsset(row.kind, row.index, -1);
+      const down = document.createElement("button");
+      down.type = "button"; down.className = "video-asset-btn"; down.textContent = "▼"; down.title = "Move down (later in the order)";
+      down.disabled = row.index >= row.count - 1;
+      down.onclick = () => moveVideoAttachedAsset(row.kind, row.index, 1);
+      actions.append(up, down);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "video-asset-btn video-asset-btn-remove"; remove.innerHTML = "&times;"; remove.title = "Remove";
+    remove.onclick = () => removeVideoAttachedAsset(row.kind, row.index);
+    actions.appendChild(remove);
+    el.append(thumb, meta, actions);
+    list.appendChild(el);
+  });
+  if (hint) {
+    const token = String(selection.modelInfo?.reference_prompt_token || "");
+    hint.textContent = rows.some(r => !r.fixed)
+      ? `Numbered items are sent in this order${token ? ` and addressed in the prompt as ${formatVideoReferenceToken(1, selection)}, ${formatVideoReferenceToken(2, selection)}, ...` : ""}. Use ▲ ▼ to reorder.`
+      : "";
+  }
+}
+
+// ---- End frame slot --------------------------------------------------------
+function setVideoEndImage(image, options = {}) {
+  if (videoEndImage && videoEndImage.previewUrl && videoEndImage.previewUrl.startsWith("blob:")) {
+    URL.revokeObjectURL(videoEndImage.previewUrl);
+  }
+  if (image) window.requestAnimationFrame(() => validateVideoSlotImageAsync("end"));
+  videoEndImage = image ? {
+    mime_type: image.mime_type || "image/png",
+    data: image.data || "",
+    name: image.name || "video-end-frame.png",
+    previewUrl: image.previewUrl || (image.data ? `data:${image.mime_type || "image/png"};base64,${image.data}` : ""),
+    original_data: image.original_data || "",
+    original_mime_type: image.original_mime_type || "",
+    mask_png_data: image.mask_png_data || "",
+    archive_date: image.archive_date || "",
+    archive_filename: image.archive_filename || "",
+    original_url: image.original_url || "",
+    masked_url: image.masked_url || "",
+    mask_url: image.mask_url || "",
+    has_mask: Boolean(image.has_mask),
+  } : null;
+  syncVideoEndUi();
+  renderVideoAssetPanel();
+  if (!options.silent) scheduleDraftSave();
+}
+
+function clearVideoEnd() {
+  setVideoEndImage(null);
+}
+
+function syncVideoEndUi() {
+  const selection = getCurrentVideoSelection();
+  const strip = document.getElementById("videoEndStrip");
+  const empty = document.getElementById("videoEndEmpty");
+  const previewWrap = document.getElementById("videoEndPreviewWrap");
+  const preview = document.getElementById("videoEndPreview");
+  const nameEl = document.getElementById("videoEndName");
+  const counterEl = document.getElementById("videoEndCounter");
+  const clearBtn = document.getElementById("clearVideoEndBtn");
+  if (!strip || !empty || !previewWrap || !preview || !nameEl || !counterEl || !clearBtn) return;
+  const showEnd = getVideoSupportsEndImage(selection);
+  strip.style.display = showEnd ? "" : "none";
+  if (!showEnd) return;
+  const hasEnd = Boolean(videoEndImage && (videoEndImage.data || videoEndImage.previewUrl));
+  strip.classList.toggle("video-source-strip-empty", !hasEnd);
+  strip.classList.toggle("ref-strip-empty-state", !hasEnd);
+  empty.style.display = hasEnd ? "none" : "";
+  previewWrap.style.display = hasEnd ? "" : "none";
+  clearBtn.style.display = hasEnd ? "" : "none";
+  counterEl.textContent = hasEnd ? "1 of 1" : "0 of 1";
+  if (hasEnd) {
+    preview.src = videoEndImage.previewUrl || `data:${videoEndImage.mime_type};base64,${videoEndImage.data}`;
+    nameEl.textContent = videoEndImage.name || "End frame";
+  } else {
+    preview.removeAttribute("src");
+    nameEl.textContent = `Optional: add one end frame (${selection.modelInfo?.end_image_field || "end_image_url"})`;
+  }
+}
+
+function triggerVideoEndInput() {
+  document.getElementById("videoEndInput")?.click();
+}
+
+async function onVideoEndInputChange(event) {
+  const file = event.target?.files?.[0];
+  if (!file) return;
+  try {
+    if (!String(file.type || "").startsWith("image/")) throw new Error("Choose an image file for the end frame.");
+    const payload = await readImageFileAsPayload(file);
+    setVideoEndImage(payload);
+  } catch (error) {
+    showError(error.message || "Could not load the end frame.");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function onVideoEndDragOver(event) {
+  event.preventDefault();
+  document.getElementById("videoEndStrip")?.classList.add("drag-over");
+}
+
+function onVideoEndDragLeave(event) {
+  const strip = document.getElementById("videoEndStrip");
+  if (strip && (!event.relatedTarget || !strip.contains(event.relatedTarget))) {
+    strip.classList.remove("drag-over");
+  }
+}
+
+async function onVideoEndDrop(event) {
+  event.preventDefault();
+  document.getElementById("videoEndStrip")?.classList.remove("drag-over");
+  const dt = event.dataTransfer;
+  try {
+    const imageFile = Array.from(dt?.files || []).find(file => String(file.type || "").startsWith("image/"));
+    if (imageFile) {
+      setVideoEndImage(await readImageFileAsPayload(imageFile));
+      return;
+    }
+    const droppedImages = extractDroppedImageCandidates(dt);
+    if (droppedImages.length > 0) {
+      const candidate = droppedImages[0];
+      setVideoEndImage(await resolveRefImageSource(candidate.url, candidate.name));
+      return;
+    }
+    if (gallerySelectedImageId) {
+      await useSelectedViewerImageAsVideoEnd();
+    }
+  } catch (error) {
+    showError(error.message || "Could not import that image as the end frame.");
+  }
+}
+
+async function useSelectedViewerImageAsVideoEnd() {
+  const entry = getSelectedGalleryImageEntry();
+  if (!entry || !entry.image) {
+    showError("Select an image in the viewer or History first.");
+    return;
+  }
+  try {
+    const payload = await ensureImagePayload(entry.image);
+    setVideoEndImage({
+      mime_type: payload.mime_type || "image/png",
+      data: payload.data || "",
+      name: entry.image.name || entry.image.gen_filename || "viewer-end-frame.png",
+      original_data: entry.image.original_data || "",
+      original_mime_type: entry.image.original_mime_type || "",
+      archive_date: entry.image.archive_date || "",
+      archive_filename: entry.image.archive_filename || "",
+      original_url: entry.image.original_url || "",
+      masked_url: entry.image.masked_url || "",
+      mask_url: entry.image.mask_url || "",
+      has_mask: Boolean(entry.image.has_mask),
+    });
+    showStatus("Selected image loaded as the end frame.", "success", 2200);
+  } catch (error) {
+    showError(error.message || "Could not use the selected image as the end frame.");
+  }
 }
 
 function normalizeUpscaleDimensionValue(value, fallback = 0) {
@@ -3444,6 +4667,18 @@ function collectGeneratorDraft() {
     videoOutputSafetyChecker: Boolean(document.getElementById("videoOutputSafetyCheckerToggle")?.checked),
     videoGenerateAudio: Boolean(document.getElementById("videoGenerateAudioToggle")?.checked),
     videoWanMultiShots: Boolean(document.getElementById("videoWanMultiShotsToggle")?.checked),
+    videoPromptExpansion: document.getElementById("videoSidePromptExpansionToggle") ? Boolean(document.getElementById("videoSidePromptExpansionToggle").checked) : true,
+    videoCfgScale: document.getElementById("videoSideCfgRange")?.value || "0.5",
+    videoSeed: document.getElementById("videoSideSeedInput")?.value || "",
+    videoMultiPrompt: document.getElementById("videoSideMultiPrompt")?.value || "",
+    videoShotType: document.getElementById("videoSideShotTypeSelect")?.value || "",
+    videoElements: videoElements.map(element => ({
+      name: element.name || "",
+      frontal: element.frontal ? cloneRefImageDraftRecord(element.frontal, 0) : null,
+      references: (element.references || []).map((ref, i) => cloneRefImageDraftRecord(ref, i)),
+      video: element.video ? { mime_type: element.video.mime_type || "video/mp4", data: element.video.data || "", name: element.video.name || "element-video.mp4", url: element.video.url || "" } : null,
+      voice_id: element.voice_id || "",
+    })),
     videoUpscaleMode: document.getElementById("videoUpscaleModeSelect")?.value || "factor",
     videoUpscaleFactor: parseFloat(document.getElementById("videoUpscaleFactorInput")?.value || "2"),
     videoUpscaleTargetResolution: document.getElementById("videoUpscaleTargetResolutionSelect")?.value || "1080p",
@@ -3456,6 +4691,11 @@ function collectGeneratorDraft() {
     videoSourceImage: videoSourceImage
       ? Object.assign({}, cloneRefImageDraftRecord(videoSourceImage, 0), {
           name: videoSourceImage.name || "video-source.png",
+        })
+      : null,
+    videoEndImage: videoEndImage
+      ? Object.assign({}, cloneRefImageDraftRecord(videoEndImage, 0), {
+          name: videoEndImage.name || "video-end-frame.png",
         })
       : null,
     videoSourceVideo: videoSourceVideo
@@ -3705,6 +4945,47 @@ function applyDraftState(draft, options = {}) {
       const el = document.getElementById("videoWanMultiShotsToggle");
       if (el) el.checked = draft.videoWanMultiShots;
     }
+    if (typeof draft.videoPromptExpansion === "boolean") {
+      const el = document.getElementById("videoSidePromptExpansionToggle");
+      if (el) el.checked = draft.videoPromptExpansion;
+    }
+    if (draft.videoCfgScale !== undefined && draft.videoCfgScale !== null && draft.videoCfgScale !== "") {
+      const el = document.getElementById("videoSideCfgRange");
+      const val = document.getElementById("videoSideCfgVal");
+      if (el) el.value = String(draft.videoCfgScale);
+      if (val && el) val.textContent = parseFloat(el.value || "0.5").toFixed(2);
+    }
+    if (typeof draft.videoSeed === "string" || typeof draft.videoSeed === "number") {
+      const el = document.getElementById("videoSideSeedInput");
+      if (el) el.value = String(draft.videoSeed);
+    }
+    if (typeof draft.videoMultiPrompt === "string") {
+      const el = document.getElementById("videoSideMultiPrompt");
+      if (el) el.value = draft.videoMultiPrompt;
+    }
+    if (draft.videoEndImage && draft.videoEndImage.data) {
+      setVideoEndImage(draft.videoEndImage, { silent: true });
+    } else {
+      setVideoEndImage(null, { silent: true });
+    }
+    if (typeof draft.videoShotType === "string" && draft.videoShotType) {
+      const el = document.getElementById("videoSideShotTypeSelect");
+      if (el) {
+        if (!Array.from(el.options).some(o => o.value === draft.videoShotType)) {
+          const opt = document.createElement("option"); opt.value = draft.videoShotType; opt.textContent = draft.videoShotType; el.appendChild(opt);
+        }
+        el.value = draft.videoShotType;
+      }
+    }
+    videoElements = Array.isArray(draft.videoElements)
+      ? draft.videoElements.map(element => ({
+          name: String(element?.name || ""),
+          frontal: element?.frontal && element.frontal.data ? cloneVideoElementImage(element.frontal, "element-frontal.png") : null,
+          references: Array.isArray(element?.references) ? element.references.filter(r => r && r.data).map((r, i) => cloneVideoElementImage(r, `element-reference-${i + 1}.png`)) : [],
+          video: element?.video && (element.video.data || element.video.url) ? { ...element.video } : null,
+          voice_id: String(element?.voice_id || ""),
+        }))
+      : [];
     if (draft.videoUpscaleMode) {
       const el = document.getElementById("videoUpscaleModeSelect");
       if (el) el.value = draft.videoUpscaleMode;
@@ -4566,6 +5847,19 @@ function applyVideoComposeSourceWidth(width, persist = true) {
 function syncVideoComposeLayout() {
   const compose = document.getElementById("videoCompose");
   if (!compose) return;
+  const trayColumn = document.getElementById("videoSourceColumn");
+  if (!trayColumn || !compose.contains(trayColumn)) {
+    // The reference tray lives in the Video settings tab; the prompt keeps the full width.
+    compose.classList.remove("video-compose-with-source", "video-compose-stacked");
+    compose.style.removeProperty("--video-compose-source-width");
+    if (trayColumn) {
+      const sourceVisible = document.getElementById("videoSourceStrip")?.style.display !== "none";
+      const refVisible = document.getElementById("videoReferenceStrip")?.style.display !== "none";
+      trayColumn.dataset.layout = (sourceVisible || refVisible) ? "stacked" : "stacked";
+    }
+    syncVideoPromptLayout();
+    return;
+  }
   const sourceStrip = document.getElementById("videoSourceStrip");
   const refStrip = document.getElementById("videoReferenceStrip");
   const sourceColumn = document.getElementById("videoSourceColumn");
@@ -5701,7 +6995,7 @@ async function loadLovedPickerSource(source = pickerSource) {
 
     renderLovedPickerList(
       list,
-      pickerTarget === "video"
+      (pickerTarget === "video" || pickerTarget === "video-end")
         ? 1
         : (pickerTarget === "video-refs" ? getMaxVideoReferenceImages() : getMaxRefImages())
     );
@@ -5715,18 +7009,23 @@ function syncLovedPickerTargetUi() {
   const title = document.querySelector("#pubPickerOverlay .modal-header h3");
   const limitNote = document.getElementById("modalLimitNote");
   const confirmBtn = document.getElementById("pickerConfirmBtn");
-  const isVideoSource = pickerTarget === "video";
+  const isVideoEnd = pickerTarget === "video-end";
+  const isVideoSource = pickerTarget === "video" || isVideoEnd;
   const isVideoRefs = pickerTarget === "video-refs";
   const isEditGlobalRefs = pickerTarget === "edit-global-refs";
   const isEditSelectionRefs = pickerTarget === "edit-selection-refs";
   if (title) {
-    title.textContent = isVideoSource ? "Choose source image" : "Choose reference images";
+    title.textContent = isVideoEnd ? "Choose end frame" : (isVideoSource ? "Choose source image" : "Choose reference images");
   }
   if (confirmBtn) {
     confirmBtn.textContent = isVideoSource ? "Use selected" : "Add selected";
   }
   if (limitNote) {
-    if (isVideoSource) {
+    if (isVideoEnd) {
+      limitNote.textContent = videoEndImage && videoEndImage.data
+        ? "Choose one image to replace the current end frame."
+        : "Choose one image to use as the video end frame.";
+    } else if (isVideoSource) {
       limitNote.textContent = videoSourceImage && videoSourceImage.data
         ? "Choose one image to replace the current video start image."
         : "Choose one image to use as the video start image.";
@@ -5745,6 +7044,7 @@ function syncLovedPickerTargetUi() {
 async function openLovedPicker(target = "refs") {
   pickerTarget =
     target === "video" ? "video" :
+    target === "video-end" ? "video-end" :
     target === "video-refs" ? "video-refs" :
     target === "edit-global-refs" ? "edit-global-refs" :
     target === "edit-selection-refs" ? "edit-selection-refs" :
@@ -5773,7 +7073,7 @@ async function switchLovedPickerSource(source) {
 }
 
 function togglePickerCard(card, url, filename, maxRef) {
-  const remaining = pickerTarget === "video"
+  const remaining = (pickerTarget === "video" || pickerTarget === "video-end")
     ? 1
     : (pickerTarget === "video-refs"
       ? maxRef - videoReferenceImages.length
@@ -5781,7 +7081,7 @@ function togglePickerCard(card, url, filename, maxRef) {
         ? getEditReferenceStorageLimit()
         : maxRef - refImages.length));
   if (!pickerSelected.has(url) && pickerSelected.size >= remaining) {
-    if (pickerTarget === "video") {
+    if (pickerTarget === "video" || pickerTarget === "video-end") {
       document.querySelectorAll(".picker-card.selected").forEach(el => el.classList.remove("selected"));
       pickerSelected.clear();
     } else {
@@ -5809,6 +7109,28 @@ async function confirmLovedPicker() {
   const urls = Array.from(pickerSelected);
   const target = pickerTarget;
   closeLovedPicker();
+  if (target === "video-end") {
+    const url = urls[0];
+    if (!url) return;
+    const item = pickerItemsByUrl.get(url) || {};
+    const filename = item.filename || url.split("/").pop();
+    try {
+      const payload = await resolveRefImageSource(url, filename);
+      setVideoEndImage({
+        ...payload,
+        archive_date: item.date || "",
+        archive_filename: item.filename || "",
+        original_url: item.original_url || "",
+        masked_url: item.masked_url || "",
+        mask_url: item.mask_url || "",
+        has_mask: Boolean(item.has_mask),
+      });
+      showStatus("End frame loaded into Video.", "success", 2200);
+    } catch (error) {
+      showError(error.message || "Could not load the selected end frame.");
+    }
+    return;
+  }
   if (target === "video") {
     const url = urls[0];
     if (!url) return;
@@ -6306,6 +7628,7 @@ function syncVideoSourceUi() {
 }
 
 function setVideoSourceImage(image) {
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
   if (videoSourceImage && videoSourceImage.previewUrl && videoSourceImage.previewUrl.startsWith("blob:")) {
     URL.revokeObjectURL(videoSourceImage.previewUrl);
   }
@@ -6313,6 +7636,7 @@ function setVideoSourceImage(image) {
     URL.revokeObjectURL(videoSourceVideo.previewUrl);
   }
   videoSourceVideo = null;
+  if (image) window.requestAnimationFrame(() => validateVideoSlotImageAsync("start"));
   videoSourceImage = image ? {
     mime_type: image.mime_type || "image/png",
     data: image.data || "",
@@ -6333,6 +7657,7 @@ function setVideoSourceImage(image) {
 }
 
 function setVideoSourceVideo(video) {
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
   if (videoSourceImage && videoSourceImage.previewUrl && videoSourceImage.previewUrl.startsWith("blob:")) {
     URL.revokeObjectURL(videoSourceImage.previewUrl);
   }
@@ -6354,6 +7679,7 @@ function setVideoSourceVideo(video) {
 }
 
 function clearVideoSource() {
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
   if (videoSourceImage && videoSourceImage.previewUrl && videoSourceImage.previewUrl.startsWith("blob:")) {
     URL.revokeObjectURL(videoSourceImage.previewUrl);
   }
@@ -6404,6 +7730,7 @@ function syncVideoDrivingAudioUi() {
 }
 
 function setVideoDrivingAudio(audio) {
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
   videoDrivingAudio = audio ? {
     mime_type: audio.mime_type || "audio/mpeg",
     data: audio.data || "",
@@ -6415,6 +7742,7 @@ function setVideoDrivingAudio(audio) {
 }
 
 function clearVideoDrivingAudio() {
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
   videoDrivingAudio = null;
   syncVideoDrivingAudioUi();
   scheduleDraftSave();
@@ -6831,6 +8159,12 @@ function renderVideoReferenceStrip() {
       el.alt = img.name || getVideoReferencePayloadName(idx + 1);
       wrap.appendChild(el);
 
+      const badge = document.createElement("span");
+      badge.className = "ref-thumb-index";
+      badge.textContent = formatVideoReferenceToken(idx + 1, selection);
+      badge.title = `Sent as reference ${idx + 1}. Refer to it in the prompt as ${badge.textContent}.`;
+      wrap.appendChild(badge);
+
       const removeBtn = document.createElement("button");
       removeBtn.className = "ref-thumb-remove";
       removeBtn.type = "button";
@@ -6852,14 +8186,18 @@ function renderVideoReferenceStrip() {
       inner.appendChild(wrap);
     });
   }
-  counter.textContent = `${videoReferenceImages.length}/${maxRefs}`;
+  counter.textContent = `${videoReferenceImages.length} of ${maxRefs}`;
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
+  if (typeof validateVideoSlotImageAsync === "function") validateVideoSlotImageAsync("ref");
+  const token = String(selection?.modelInfo?.reference_prompt_token || "");
   hint.textContent = maxRefs > 0
-    ? `${modelLabel} accepts up to ${maxRefs} reference image${maxRefs === 1 ? "" : "s"}.`
+    ? `${modelLabel} accepts up to ${maxRefs} reference image${maxRefs === 1 ? "" : "s"}.${token ? ` Order matters: refer to them in the prompt as ${formatVideoReferenceToken(1, selection)}, ${formatVideoReferenceToken(2, selection)}, ...` : ""}`
     : "This video model does not use extra reference images.";
   syncVideoComposeLayout();
 }
 
 function renderVideoReferenceVideoStrip() {
+  window.requestAnimationFrame(() => { if (typeof renderVideoAssetPanel === "function") renderVideoAssetPanel(); });
   const strip = document.getElementById("videoReferenceVideoStrip");
   const inner = document.getElementById("videoReferenceVideoInner");
   const empty = document.getElementById("videoReferenceVideoEmpty");
@@ -7198,7 +8536,24 @@ async function generateVideo() {
   const usesSourceVideo = getVideoSupportsSourceVideo(selection);
   const usesReferenceImages = getVideoSupportsReferenceImages(selection);
   const btn = document.getElementById("generateVideoBtn");
-  if (getVideoSupportsPrompt(selection) && !prompt) {
+  if (getVideoSupportsElements(selection)) {
+    const schema = modelInfo.element_schema || {};
+    const refsMin = Math.max(0, parseInt(schema.references_min || 1, 10));
+    for (let i = 0; i < videoElements.length; i += 1) {
+      const element = videoElements[i];
+      if (element.video) continue;
+      if (!element.frontal) {
+        showError(`${formatVideoElementToken(i + 1, selection)}: add a frontal image (or a video) before generating.`);
+        return;
+      }
+      if ((element.references || []).length < refsMin) {
+        showError(`${formatVideoElementToken(i + 1, selection)}: add at least ${refsMin} angle reference image${refsMin === 1 ? "" : "s"}.`);
+        return;
+      }
+    }
+  }
+  const multiPromptText = modelInfo.supports_multi_prompt ? String(document.getElementById("videoSideMultiPrompt")?.value || "").trim() : "";
+  if (getVideoSupportsPrompt(selection) && !prompt && !multiPromptText) {
     showError("Please enter a video prompt before generating.");
     return;
   }
@@ -7230,6 +8585,20 @@ async function generateVideo() {
     videoOutputSafetyChecker: Boolean(document.getElementById("videoOutputSafetyCheckerToggle")?.checked),
     videoGenerateAudio: Boolean(document.getElementById("videoGenerateAudioToggle")?.checked),
     videoWanMultiShots: Boolean(document.getElementById("videoWanMultiShotsToggle")?.checked),
+    videoPromptExpansion: document.getElementById("videoSidePromptExpansionToggle") ? Boolean(document.getElementById("videoSidePromptExpansionToggle").checked) : true,
+    videoCfgScale: modelInfo.supports_cfg_scale ? (document.getElementById("videoSideCfgRange")?.value ?? null) : null,
+    videoSeed: modelInfo.supports_seed ? (document.getElementById("videoSideSeedInput")?.value || null) : null,
+    videoMultiPrompt: modelInfo.supports_multi_prompt ? (document.getElementById("videoSideMultiPrompt")?.value || "") : "",
+    videoShotType: modelInfo.supports_shot_type ? (document.getElementById("videoSideShotTypeSelect")?.value || "") : "",
+    videoElements: getVideoSupportsElements(selection)
+      ? videoElements.map(element => ({
+          name: element.name || "",
+          frontal: element.frontal ? { mime_type: element.frontal.mime_type || "image/png", data: element.frontal.data || "", name: element.frontal.name || "element-frontal.png" } : null,
+          references: (element.references || []).map((ref, i) => ({ mime_type: ref.mime_type || "image/png", data: ref.data || "", name: ref.name || `element-reference-${i + 1}.png` })),
+          video: element.video ? { mime_type: element.video.mime_type || "video/mp4", data: element.video.data || "", name: element.video.name || "element-video.mp4", url: element.video.url || "" } : null,
+          voice_id: element.voice_id || "",
+        }))
+      : [],
     videoUpscaleMode: document.getElementById("videoUpscaleModeSelect")?.value || "factor",
     videoUpscaleFactor: parseFloat(document.getElementById("videoUpscaleFactorInput")?.value || "2"),
     videoUpscaleTargetResolution: document.getElementById("videoUpscaleTargetResolutionSelect")?.value || "1080p",
@@ -7239,6 +8608,13 @@ async function generateVideo() {
     videoUpscaleOutputWriteMode: document.getElementById("videoUpscaleOutputWriteModeSelect")?.value || "balanced",
     videoUpscaleSeed: document.getElementById("videoUpscaleSeedInput")?.value || "",
     videoUpscaleSyncMode: Boolean(document.getElementById("videoUpscaleSyncModeToggle")?.checked),
+    endImage: (getVideoSupportsEndImage(selection) && videoEndImage && videoEndImage.data)
+      ? Object.assign({}, buildGenerationRefPayload(videoEndImage), {
+          mime_type: videoEndImage.mime_type || "image/png",
+          data: videoEndImage.data || "",
+          name: videoEndImage.name || "video-end-frame.png",
+        })
+      : {},
     sourceImage: usesStartImage
       ? Object.assign({}, buildGenerationRefPayload(videoSourceImage || {}), {
           mime_type: videoSourceImage?.mime_type || "image/png",
@@ -13142,6 +14518,7 @@ function renderElFiltersBar() {
 async function openElements(target = "refs") {
   elementsTarget =
     target === "video" ? "video"
+      : target === "video-end" ? "video-end"
       : target === "video-refs" ? "video-refs"
       : target === "edit-global-refs" ? "edit-global-refs"
       : target === "edit-selection-refs" ? "edit-selection-refs"
@@ -13310,7 +14687,7 @@ function renderElementsGrid(items) {
 }
 
 function toggleElementCard(card, asset) {
-  const remaining = elementsTarget === "video"
+  const remaining = (elementsTarget === "video" || elementsTarget === "video-end")
     ? 1
     : (elementsTarget === "video-refs"
         ? getMaxVideoReferenceImages() - videoReferenceImages.length
@@ -13321,8 +14698,8 @@ function toggleElementCard(card, asset) {
                 : getMaxRefImages() - refImages.length)));
   const safeRemaining = Math.max(0, remaining);
   if (safeRemaining <= 0) {
-    if (elementsTarget === "video") {
-      showError("Replace the current video start image by selecting one asset.");
+    if (elementsTarget === "video" || elementsTarget === "video-end") {
+      showError("Replace the current image by selecting one asset.");
     } else if (elementsTarget === "video-refs") {
       showError("You have reached the video reference image limit.");
     } else {
@@ -13331,7 +14708,7 @@ function toggleElementCard(card, asset) {
     return;
   }
   if (!elSelectedIds.has(asset.id) && elSelectedIds.size >= safeRemaining) {
-    if (elementsTarget === "video") {
+    if (elementsTarget === "video" || elementsTarget === "video-end") {
       elSelectedIds = new Set();
       elSelectedMap = {};
       document.querySelectorAll(".el-card.selected").forEach(el => el.classList.remove("selected"));
@@ -13400,7 +14777,11 @@ function updateElementsSelCount() {
 
 function updateElementsLimitNote() {
   let note = "";
-  if (elementsTarget === "video") {
+  if (elementsTarget === "video-end") {
+    note = videoEndImage && videoEndImage.data
+      ? "Choose one image to replace the current end frame."
+      : "Choose one image to use as the video end frame.";
+  } else if (elementsTarget === "video") {
     note = videoSourceImage && videoSourceImage.data
       ? "Choose one image to replace the current video start image."
       : "Choose one image to use as the video start image.";
@@ -13427,6 +14808,19 @@ function updateElementsLimitNote() {
 async function confirmElements() {
   const assets = Object.values(elSelectedMap);
   closeElements();
+
+  if (elementsTarget === "video-end") {
+    const asset = assets[0];
+    if (!asset) return;
+    try {
+      const payload = await resolveRefImageSource(asset.img_url, asset.name);
+      setVideoEndImage(payload);
+      showStatus("End frame loaded into Video.", "success", 2200);
+    } catch (error) {
+      showError(error.message || "Could not load the selected end frame.");
+    }
+    return;
+  }
 
   if (elementsTarget === "video") {
     const asset = assets[0];

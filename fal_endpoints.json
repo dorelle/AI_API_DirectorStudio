@@ -1,0 +1,787 @@
+{
+  "version": 1,
+  "_readme": [
+    "The maintained list of fal video endpoints. This is the only catalog file a human edits.",
+    "endpoint    - fal endpoint id exactly as fal publishes it (the OpenAPI schema is fetched from it).",
+    "id          - optional app-internal id when it must differ from the endpoint (Wan keeps its v1.4 ids).",
+    "label       - dropdown label. Routes that share a label are grouped by input mode.",
+    "family      - dropdown family key. Unknown keys need an entry under families.",
+    "sort_order  - position in the dropdown, lower first.",
+    "input_modes / video_mode_kind - optional; inferred from the endpoint path when omitted.",
+    "overrides   - optional dict merged last, for hand-tuned keys the schema cannot express.",
+    "Refresh from Settings, or: python -c \"import nbs; nbs.refresh_fal_catalog()\""
+  ],
+  "families": {
+    "veo": {
+      "label": "Veo 3.1",
+      "default_provider": "fal",
+      "provider_order": [
+        "fal"
+      ],
+      "providers": {
+        "fal": "fal-ai/veo3.1"
+      }
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint": "fal-ai/kling-video/v1/standard/text-to-video",
+      "label": "Kling 1.0 Standard",
+      "family": "kling",
+      "sort_order": 80,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1/standard/image-to-video",
+      "label": "Kling 1.0 Standard",
+      "family": "kling",
+      "sort_order": 81,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.5/pro/text-to-video",
+      "label": "Kling 1.5 Pro",
+      "family": "kling",
+      "sort_order": 90,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.5/pro/image-to-video",
+      "label": "Kling 1.5 Pro",
+      "family": "kling",
+      "sort_order": 91,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.6/standard/text-to-video",
+      "label": "Kling 1.6 Standard",
+      "family": "kling",
+      "sort_order": 100,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.6/standard/image-to-video",
+      "label": "Kling 1.6 Standard",
+      "family": "kling",
+      "sort_order": 101,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.6/standard/elements",
+      "label": "Kling 1.6 Elements Standard",
+      "family": "kling",
+      "sort_order": 102,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.6/pro/text-to-video",
+      "label": "Kling 1.6 Pro",
+      "family": "kling",
+      "sort_order": 110,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.6/pro/image-to-video",
+      "label": "Kling 1.6 Pro",
+      "family": "kling",
+      "sort_order": 111,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v1.6/pro/elements",
+      "label": "Kling 1.6 Elements Pro",
+      "family": "kling",
+      "sort_order": 112,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2/master/text-to-video",
+      "label": "Kling 2.0 Master",
+      "family": "kling",
+      "sort_order": 115,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2/master/image-to-video",
+      "label": "Kling 2.0 Master",
+      "family": "kling",
+      "sort_order": 116,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.1/standard/image-to-video",
+      "label": "Kling 2.1 Standard",
+      "family": "kling",
+      "sort_order": 118,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.1/pro/image-to-video",
+      "label": "Kling 2.1 Pro",
+      "family": "kling",
+      "sort_order": 119,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.1/master/text-to-video",
+      "label": "Kling 2.1 Master",
+      "family": "kling",
+      "sort_order": 120,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.1/master/image-to-video",
+      "label": "Kling 2.1 Master",
+      "family": "kling",
+      "sort_order": 121,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+      "label": "Kling 2.5 Turbo Pro",
+      "family": "kling",
+      "sort_order": 125,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+      "label": "Kling 2.5 Turbo Standard",
+      "family": "kling",
+      "sort_order": 126,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+      "label": "Kling 2.5 Turbo Pro",
+      "family": "kling",
+      "sort_order": 127,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.6/pro/text-to-video",
+      "label": "Kling 2.6 Pro",
+      "family": "kling",
+      "sort_order": 130,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v2.6/pro/image-to-video",
+      "label": "Kling 2.6 Pro",
+      "family": "kling",
+      "sort_order": 131,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/standard/text-to-video",
+      "label": "Kling 3.0 Standard",
+      "family": "kling",
+      "sort_order": 140,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/standard/image-to-video",
+      "label": "Kling 3.0 Standard",
+      "family": "kling",
+      "sort_order": 141,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/pro/text-to-video",
+      "label": "Kling 3.0 Pro",
+      "family": "kling",
+      "sort_order": 150,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/pro/image-to-video",
+      "label": "Kling 3.0 Pro",
+      "family": "kling",
+      "sort_order": 151,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/4k/text-to-video",
+      "label": "Kling 3.0 4K",
+      "family": "kling",
+      "sort_order": 152,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/4k/image-to-video",
+      "label": "Kling 3.0 4K",
+      "family": "kling",
+      "sort_order": 153,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o1/standard/image-to-video",
+      "label": "Kling O1 Standard",
+      "family": "kling",
+      "sort_order": 158,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o1/standard/reference-to-video",
+      "label": "Kling O1 Standard Reference",
+      "family": "kling",
+      "sort_order": 160,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o1/image-to-video",
+      "label": "Kling O1 Pro",
+      "family": "kling",
+      "sort_order": 165,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o1/reference-to-video",
+      "label": "Kling O1 Pro Reference",
+      "family": "kling",
+      "sort_order": 166,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/standard/text-to-video",
+      "label": "Kling O3 Standard",
+      "family": "kling",
+      "sort_order": 170,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/standard/image-to-video",
+      "label": "Kling O3 Standard",
+      "family": "kling",
+      "sort_order": 171,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/standard/video-to-video/edit",
+      "label": "Kling O3 Standard V2V",
+      "family": "kling",
+      "sort_order": 171,
+      "input_modes": [
+        "video"
+      ],
+      "video_mode_kind": "video_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/standard/reference-to-video",
+      "label": "Kling O3 Reference",
+      "family": "kling",
+      "sort_order": 172,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/pro/text-to-video",
+      "label": "Kling O3 Pro",
+      "family": "kling",
+      "sort_order": 175,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/pro/image-to-video",
+      "label": "Kling O3 Pro",
+      "family": "kling",
+      "sort_order": 176,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/pro/video-to-video/edit",
+      "label": "Kling O3 Pro V2V",
+      "family": "kling",
+      "sort_order": 176,
+      "input_modes": [
+        "video"
+      ],
+      "video_mode_kind": "video_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/pro/reference-to-video",
+      "label": "Kling O3 Pro Reference",
+      "family": "kling",
+      "sort_order": 177,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/4k/text-to-video",
+      "label": "Kling O3 4K",
+      "family": "kling",
+      "sort_order": 178,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/4k/image-to-video",
+      "label": "Kling O3 4K",
+      "family": "kling",
+      "sort_order": 179,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/o3/4k/reference-to-video",
+      "label": "Kling O3 4K Reference",
+      "family": "kling",
+      "sort_order": 180,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/lite/text-to-video",
+      "label": "Seedance 1.0 Lite",
+      "family": "seedance",
+      "sort_order": 220,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/lite/image-to-video",
+      "label": "Seedance 1.0 Lite",
+      "family": "seedance",
+      "sort_order": 221,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/lite/reference-to-video",
+      "label": "Seedance 1.0 Lite Reference",
+      "family": "seedance",
+      "sort_order": 222,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/pro/text-to-video",
+      "label": "Seedance 1.0 Pro",
+      "family": "seedance",
+      "sort_order": 225,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/pro/image-to-video",
+      "label": "Seedance 1.0 Pro",
+      "family": "seedance",
+      "sort_order": 226,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/pro/fast/text-to-video",
+      "label": "Seedance 1.0 Pro Fast",
+      "family": "seedance",
+      "sort_order": 230,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1/pro/fast/image-to-video",
+      "label": "Seedance 1.0 Pro Fast",
+      "family": "seedance",
+      "sort_order": 231,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
+      "label": "Seedance 1.5 Pro",
+      "family": "seedance",
+      "sort_order": 240,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
+      "label": "Seedance 1.5 Pro",
+      "family": "seedance",
+      "sort_order": 241,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "bytedance/seedance-2.0/text-to-video",
+      "label": "Seedance 2.0",
+      "family": "seedance",
+      "sort_order": 250,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video"
+    },
+    {
+      "endpoint": "bytedance/seedance-2.0/image-to-video",
+      "label": "Seedance 2.0",
+      "family": "seedance",
+      "sort_order": 251,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "endpoint": "bytedance/seedance-2.0/reference-to-video",
+      "label": "Seedance 2.0 Reference",
+      "family": "seedance",
+      "sort_order": 252,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video"
+    },
+    {
+      "id": "fal:wan2.7:text-to-video",
+      "endpoint": "fal-ai/wan/v2.7/text-to-video",
+      "label": "Wan Video 2.7",
+      "family": "wan-video",
+      "sort_order": 210,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video",
+      "overrides": {
+        "supports_output_safety_checker": true
+      }
+    },
+    {
+      "id": "fal:wan2.7:image-to-video",
+      "endpoint": "fal-ai/wan/v2.7/image-to-video",
+      "label": "Wan Video 2.7",
+      "family": "wan-video",
+      "sort_order": 211,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video"
+    },
+    {
+      "id": "fal:wan2.7:first-last-frame",
+      "endpoint": "fal-ai/wan/v2.7/image-to-video",
+      "label": "Wan 2.7 First+Last",
+      "family": "wan-video",
+      "sort_order": 212,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "first_last_frame_to_video",
+      "overrides": {
+        "supports_reference_images": true,
+        "reference_images_required": true,
+        "reference_images_field": "end_image_url",
+        "max_reference_images": 1,
+        "supports_start_image": true,
+        "start_image_required": true
+      }
+    },
+    {
+      "id": "fal:wan2.7:continue-video",
+      "endpoint": "fal-ai/wan/v2.7/image-to-video",
+      "label": "Wan 2.7 Continue",
+      "family": "wan-video",
+      "sort_order": 213,
+      "input_modes": [
+        "video"
+      ],
+      "video_mode_kind": "video_continuation",
+      "overrides": {
+        "supports_source_video": true,
+        "source_video_required": true,
+        "source_video_field": "video_url"
+      }
+    },
+    {
+      "id": "fal:wan2.7:reference-to-video",
+      "endpoint": "fal-ai/wan/v2.7/reference-to-video",
+      "label": "Wan 2.7 Reference",
+      "family": "wan-video",
+      "sort_order": 214,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video",
+      "overrides": {
+        "supports_multi_shots": true,
+        "supports_reference_videos": true,
+        "max_reference_videos": 8
+      }
+    },
+    {
+      "id": "fal:wan2.7:edit-video",
+      "endpoint": "fal-ai/wan/v2.7/edit-video",
+      "label": "Wan 2.7 Edit",
+      "family": "wan-video",
+      "sort_order": 215,
+      "input_modes": [
+        "video"
+      ],
+      "video_mode_kind": "video_edit"
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/turbo/standard/text-to-video",
+      "label": "Kling 3.0 Turbo Standard",
+      "family": "kling",
+      "sort_order": 154
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/turbo/standard/image-to-video",
+      "label": "Kling 3.0 Turbo Standard",
+      "family": "kling",
+      "sort_order": 155
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/turbo/pro/text-to-video",
+      "label": "Kling 3.0 Turbo Pro",
+      "family": "kling",
+      "sort_order": 156
+    },
+    {
+      "endpoint": "fal-ai/kling-video/v3/turbo/pro/image-to-video",
+      "label": "Kling 3.0 Turbo Pro",
+      "family": "kling",
+      "sort_order": 157
+    },
+    {
+      "endpoint": "bytedance/seedance-2.0/fast/text-to-video",
+      "label": "Seedance 2.0 Fast",
+      "family": "seedance",
+      "sort_order": 253
+    },
+    {
+      "endpoint": "bytedance/seedance-2.0/fast/image-to-video",
+      "label": "Seedance 2.0 Fast",
+      "family": "seedance",
+      "sort_order": 254
+    },
+    {
+      "endpoint": "bytedance/seedance-2.0/fast/reference-to-video",
+      "label": "Seedance 2.0 Fast Reference",
+      "family": "seedance",
+      "sort_order": 255
+    },
+    {
+      "endpoint": "bytedance/seedance-2.5/text-to-video",
+      "label": "Seedance 2.5",
+      "family": "seedance",
+      "sort_order": 256
+    },
+    {
+      "endpoint": "bytedance/seedance-2.5/image-to-video",
+      "label": "Seedance 2.5",
+      "family": "seedance",
+      "sort_order": 257
+    },
+    {
+      "endpoint": "bytedance/seedance-2.5/reference-to-video",
+      "label": "Seedance 2.5 Reference",
+      "family": "seedance",
+      "sort_order": 258
+    },
+    {
+      "endpoint": "fal-ai/veo3.1",
+      "label": "Veo 3.1",
+      "family": "veo",
+      "sort_order": 270,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/image-to-video",
+      "label": "Veo 3.1",
+      "family": "veo",
+      "sort_order": 271,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/first-last-frame-to-video",
+      "label": "Veo 3.1 First+Last",
+      "family": "veo",
+      "sort_order": 272,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/reference-to-video",
+      "label": "Veo 3.1 Reference",
+      "family": "veo",
+      "sort_order": 273,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/fast",
+      "label": "Veo 3.1 Fast",
+      "family": "veo",
+      "sort_order": 274,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/fast/image-to-video",
+      "label": "Veo 3.1 Fast",
+      "family": "veo",
+      "sort_order": 275,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/fast/first-last-frame-to-video",
+      "label": "Veo 3.1 Fast First+Last",
+      "family": "veo",
+      "sort_order": 276,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "fal-ai/veo3.1/fast/reference-to-video",
+      "label": "Veo 3.1 Fast Reference",
+      "family": "veo",
+      "sort_order": 277,
+      "overrides": {
+        "generate_audio_default": false
+      }
+    }
+  ]
+}
