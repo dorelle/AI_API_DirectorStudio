@@ -1876,12 +1876,136 @@ else:
     }
 
 
-def _build_vocab_prompt_block() -> str:
+def _load_vocabulary_file(filename: str) -> dict:
+    """Task 11: same loading as talent_vocabulary.json, same place on disk. Absent file -> {}."""
+    path = os.path.join(BASE_DIR, filename)
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+ENVIRONMENT_VOCABULARY = _load_vocabulary_file("environment_vocabulary.json")
+PROP_VOCABULARY = _load_vocabulary_file("prop_vocabulary.json")
+
+
+def _build_vocab_prompt_block(vocabulary: dict | None = None) -> str:
     """Costruisce il blocco testo del vocabolario da inserire nel prompt Gemini."""
+    vocabulary = TALENT_VOCABULARY if vocabulary is None else vocabulary
+    if not vocabulary:
+        return ""
     lines = ["MANDATORY ALLOWED VALUES Ã¢â‚¬â€ use ONLY these exact strings, no variations:"]
-    for field, values in TALENT_VOCABULARY.items():
+    for field, values in vocabulary.items():
         lines.append(f'  "{field}": {" | ".join(values)}')
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Element types (Task 11). Talent is the original; environment and prop reuse its intake.
+# A record with no "type" is talent. Folder = the existing ELEMENTS_CATEGORIES folder.
+# ---------------------------------------------------------------------------
+ELEMENT_TYPES = {
+    "talent": {
+        "label": "Talent",
+        "folder": "Model Managment",
+        "fields": ["gender", "ethnicity", "age_group", "skin_tone", "hair_color", "hair_style", "eye_color", "body_type"],
+    },
+    "environment": {
+        "label": "Environment",
+        "folder": "Locations",
+        "fields": ["location_type", "interior_exterior", "time_of_day", "materials", "light_behavior", "palette", "period", "condition"],
+    },
+    "prop": {
+        "label": "Prop",
+        "folder": "Props",
+        "fields": ["category", "material", "scale", "period", "condition"],
+    },
+}
+ELEMENT_FOLDER_TYPES = {cfg["folder"]: key for key, cfg in ELEMENT_TYPES.items()}
+
+
+def normalize_element_type(value) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in ELEMENT_TYPES else "talent"
+
+
+def element_vocabulary(element_type: str) -> dict:
+    return {"talent": TALENT_VOCABULARY, "environment": ENVIRONMENT_VOCABULARY, "prop": PROP_VOCABULARY}.get(element_type, {})
+
+
+def build_element_analysis_prompt(element_type: str) -> str:
+    """Extraction prompt for environment / prop. Talent keeps its original inline prompt."""
+    vocab_block = _build_vocab_prompt_block(element_vocabulary(element_type))
+    constraint = (
+        "CRITICAL: For every field listed above you MUST use ONLY the exact string values given. "
+        "Do NOT invent new values, do NOT use variations, plurals, or spaces instead of underscores.\n\n"
+        if vocab_block else
+        "Use short lowercase snake_case values for single-choice fields.\n\n"
+    )
+    if element_type == "environment":
+        return (
+            "You are a film location scout and production designer. Analyze this photo of a place and extract structured metadata "
+            "for a location library.\n"
+            "Your task: fill in EVERY field - never leave anything empty.\n\n"
+            f"{vocab_block}\n\n"
+            "Additional field rules:\n"
+            "- name: a short, specific label for this place as a crew would call it (e.g. Sodium Bus Depot, Rooftop Water Tank, Grandmother's Kitchen)\n"
+            "- materials: comma-separated list of the dominant surfaces and materials visible (e.g. wet asphalt, corrugated steel, cracked plaster)\n"
+            "- description: 2 precise sentences for AI image generation - layout and depth, where the light comes from, textures, what makes the place recognisable\n"
+            "- tags: JSON array of 4-6 lowercase, single-word or hyphenated tags useful for searching\n\n"
+            f"{constraint}"
+            "Return ONLY a valid JSON object - no markdown fences, no extra text, no comments:\n"
+            "{\n"
+            '  "name": "...",\n'
+            '  "location_type": "...",\n'
+            '  "interior_exterior": "...",\n'
+            '  "time_of_day": "...",\n'
+            '  "materials": "...",\n'
+            '  "light_behavior": "...",\n'
+            '  "palette": "...",\n'
+            '  "period": "...",\n'
+            '  "condition": "...",\n'
+            '  "description": "...",\n'
+            '  "tags": ["...", "..."]\n'
+            "}"
+        )
+    return (
+        "You are a film props master. Analyze this photo of an object and extract structured metadata for a props library.\n"
+        "Your task: fill in EVERY field - never leave anything empty.\n\n"
+        f"{vocab_block}\n\n"
+        "Additional field rules:\n"
+        "- name: a short, specific label for the object as a crew would call it (e.g. Brass Depot Key, Cracked Thermos, 1970s Rotary Phone)\n"
+        "- description: 2 precise sentences for AI image generation - shape, proportions, surface finish, wear, distinguishing marks, what must stay consistent between shots\n"
+        "- tags: JSON array of 4-6 lowercase, single-word or hyphenated tags useful for searching\n\n"
+        f"{constraint}"
+        "Return ONLY a valid JSON object - no markdown fences, no extra text, no comments:\n"
+        "{\n"
+        '  "name": "...",\n'
+        '  "category": "...",\n'
+        '  "material": "...",\n'
+        '  "scale": "...",\n'
+        '  "period": "...",\n'
+        '  "condition": "...",\n'
+        '  "description": "...",\n'
+        '  "tags": ["...", "..."]\n'
+        "}"
+    )
+
+
+STYLE_SCAN_PROMPT = (
+    "You are a cinematographer and colourist. Look at this reference image and write the photographic treatment it "
+    "represents, so the same look can be applied to other shots.\n"
+    "Cover, in this order: grade and colour treatment; light quality and direction; palette; film stock or sensor "
+    "character (grain, halation, dynamic range); overall photographic register.\n"
+    "Write 3-5 plain sentences of prose. Describe the look, not the subject. No headings, no lists, no camera brands "
+    "unless unmistakable.\n\n"
+    "Return ONLY a valid JSON object - no markdown fences, no extra text:\n"
+    '{\n  "text": "..."\n}'
+)
 
 
 # Model for talent visual analysis (text output only, not image generation)
@@ -8946,6 +9070,47 @@ def api_styles_create():
     return jsonify({"ok": True, "style": style})
 
 
+@app.route("/api/styles/scan", methods=["POST"])
+@login_required
+def api_styles_scan():
+    """Style scan (Task 11): image in, treatment prose out, image archived as an asset path.
+    Body: {data, mime_type} for a dropped file, or {asset_url} for an existing asset."""
+    config  = load_config()
+    api_key = config.get("api_key", "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "API key not configured"})
+    body = request.get_json(silent=True) or {}
+    image_url = str(body.get("asset_url") or "").strip()
+    image_b64 = str(body.get("data") or "")
+    mime_type = str(body.get("mime_type") or "image/png")
+    if image_url and not image_b64:
+        try:
+            loaded = load_asset_image_payload(image_url, "style-scan.png")
+            image_b64, mime_type = loaded["data"], loaded["mime_type"]
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)})
+    if not image_b64:
+        return jsonify({"ok": False, "error": "Image data missing"})
+    if not image_url:
+        # A dropped file becomes a reference-archive asset so the style's images array can point at it.
+        now = datetime.now()
+        entries = build_reference_archive_entries(
+            [{"data": image_b64, "mime_type": mime_type, "name": str(body.get("name") or "style-reference.png")}],
+            now.strftime("%Y-%m-%d"), now.strftime("%H%M%S%f")[:12],
+        )
+        if entries:
+            image_url = f"/reference-archive/{entries[0]['date']}/{entries[0]['filename']}"
+    try:
+        image_b64, mime_type, *_ = normalize_image_b64(image_b64, mime_type)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Image pre-processing error: {exc}"})
+    extraction = run_vision_extraction(api_key, image_b64, mime_type, STYLE_SCAN_PROMPT)
+    if not extraction.get("ok"):
+        return jsonify(extraction)
+    text = str((extraction.get("metadata") or {}).get("text") or "").strip()
+    return jsonify({"ok": True, "text": text, "image_url": image_url, "raw_text": extraction["raw_text"], "usage": extraction["usage"]})
+
+
 @app.route("/api/styles/<int:style_id>", methods=["GET"])
 @login_required
 def api_styles_get(style_id):
@@ -9271,6 +9436,10 @@ def api_elements_catalog():
                 "is_favorite": item.get("is_favorite", False),
                 "profile":     item.get("profile", {}),
             }
+            # Task 11: type from the record, else from the folder; no "type" means talent.
+            asset["type"] = normalize_element_type(item.get("type") or ELEMENT_FOLDER_TYPES.get(folder_name, "talent"))
+            for key in ELEMENT_TYPES[asset["type"]]["fields"]:
+                asset.setdefault(key, item.get(key, ""))
             all_items.append(asset)
 
     # Deduplicate by id (same person with multiple images in the catalog)
@@ -9459,62 +9628,9 @@ def api_migrate_catalog():
 # ---------------------------------------------------------------------------
 # API - Elements: image analysis with Gemini Vision
 # ---------------------------------------------------------------------------
-@app.route("/api/elements/analyze-image", methods=["POST"])
-@login_required
-def api_analyze_talent_image():
-    """
-    Analyze a talent image with Gemini Vision and return JSON metadata.
-    Uses TALENT_ANALYSIS_MODEL (gemini-3-flash-preview) - more capable for structured JSON extraction.
-    """
-    config  = load_config()
-    api_key = config.get("api_key", "").strip()
-    if not api_key:
-        return jsonify({"ok": False, "error": "API key not configured"})
-
-    body      = request.get_json(silent=True) or {}
-    image_b64 = body.get("data", "")
-    mime_type = body.get("mime_type", "image/jpeg")
-
-    if not image_b64:
-        return jsonify({"ok": False, "error": "Image data missing"})
-
-    # Normalize the image before sending it to Gemini
-    try:
-        image_b64, mime_type, orig_w, orig_h, proc_w, proc_h, was_resized = \
-            normalize_image_b64(image_b64, mime_type)
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Image pre-processing error: {e}"})
-
-    vocab_block = _build_vocab_prompt_block()
-    analysis_prompt = (
-        "You are a professional talent catalog specialist. Analyze this portrait photo carefully and extract structured metadata.\n"
-        "Your task: fill in EVERY field Ã¢â‚¬â€ never leave anything empty or use values outside the allowed lists.\n\n"
-        f"{vocab_block}\n\n"
-        "Additional field rules:\n"
-        "- name: INVENT a realistic first+last name that fits the person's apparent ethnicity and vibe "
-        "(e.g. Sofia Esposito, Kai Nakamura, Amara Diallo, Luca Ferretti, Yuki Tanaka, Zara Osei)\n"
-        "- description: 2 precise sentences for AI image generation Ã¢â‚¬â€ describe face shape, skin quality, "
-        "distinctive features (nose, lips, jawline, cheekbones), eye shape, expression, overall aesthetic vibe\n"
-        "- tags: JSON array of 4Ã¢â‚¬â€œ6 lowercase, single-word or hyphenated tags useful for searching "
-        "(e.g. [\"editorial\", \"beauty\", \"runway\", \"high-fashion\", \"dark-skin\", \"versatile\"])\n\n"
-        "CRITICAL: You MUST use ONLY the exact string values listed above. "
-        "Do NOT invent new values, do NOT use variations, plurals, or spaces instead of underscores.\n\n"
-        "Return ONLY a valid JSON object Ã¢â‚¬â€ no markdown fences, no extra text, no comments:\n"
-        "{\n"
-        '  "name": "...",\n'
-        '  "gender": "...",\n'
-        '  "ethnicity": "...",\n'
-        '  "age_group": "...",\n'
-        '  "skin_tone": "...",\n'
-        '  "hair_color": "...",\n'
-        '  "hair_style": "...",\n'
-        '  "eye_color": "...",\n'
-        '  "body_type": "...",\n'
-        '  "description": "...",\n'
-        '  "tags": ["...", "..."]\n'
-        "}"
-    )
-
+def run_vision_extraction(api_key: str, image_b64: str, mime_type: str, analysis_prompt: str, timeout: int = 60) -> dict:
+    """The one Gemini Vision extraction path (Task 11 lifted it out of the talent route unchanged).
+    Returns {"ok", "metadata", "raw_text", "usage"} or {"ok": False, "error", ...}."""
     payload = {
         "contents": [{
             "role": "user",
@@ -9534,12 +9650,12 @@ def api_analyze_talent_image():
             GEMINI_BASE_URL.format(model=TALENT_ANALYSIS_MODEL),
             params={"key": api_key},
             json=payload,
-            timeout=60
+            timeout=timeout
         )
     except requests.exceptions.Timeout:
-        return jsonify({"ok": False, "error": "Image analysis timeout (60s)"})
+        return {"ok": False, "error": f"Image analysis timeout ({timeout}s)"}
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        return {"ok": False, "error": str(e)}
 
     if resp.status_code != 200:
         try:
@@ -9547,7 +9663,7 @@ def api_analyze_talent_image():
             err_msg  = err_body.get("error", {}).get("message", f"HTTP {resp.status_code}")
         except Exception:
             err_msg = f"HTTP {resp.status_code}: {resp.text[:200]}"
-        return jsonify({"ok": False, "error": err_msg})
+        return {"ok": False, "error": err_msg}
 
     result   = resp.json()
     raw_text = ""
@@ -9588,7 +9704,7 @@ def api_analyze_talent_image():
     save_config(cfg_v)
 
     if not raw_text:
-        return jsonify({"ok": False, "error": "Empty response from Gemini", "raw": str(result)[:300]})
+        return {"ok": False, "error": "Empty response from Gemini", "raw": str(result)[:300]}
 
     # Parsing JSON robusto: prova diretta, poi estrai il primo { ... } block
     metadata = None
@@ -9610,20 +9726,116 @@ def api_analyze_talent_image():
                 pass
 
     if metadata is None:
-        return jsonify({"ok": False, "error": "Could not extract JSON from response", "raw": raw_text[:500]})
+        return {"ok": False, "error": "Could not extract JSON from response", "raw": raw_text[:500]}
+    return {
+        "ok": True,
+        "metadata": metadata,
+        "raw_text": raw_text,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": vision_cost},
+    }
+
+
+@app.route("/api/elements/vocabularies")
+@login_required
+def api_element_vocabularies():
+    """Task 11: the per-type vocabularies as loaded from disk (empty where the file is absent)."""
+    return jsonify({"ok": True, "vocabularies": {"talent": TALENT_VOCABULARY, "environment": ENVIRONMENT_VOCABULARY, "prop": PROP_VOCABULARY}})
+
+
+@app.route("/api/elements/analyze-image", methods=["POST"])
+@login_required
+def api_analyze_talent_image():
+    """
+    Analyze a talent image with Gemini Vision and return JSON metadata.
+    Uses TALENT_ANALYSIS_MODEL (gemini-3-flash-preview) - more capable for structured JSON extraction.
+    Task 11: element_type = talent (default) | environment | prop | style, same path, different prompt.
+    """
+    config  = load_config()
+    api_key = config.get("api_key", "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "API key not configured"})
+
+    body      = request.get_json(silent=True) or {}
+    image_b64 = body.get("data", "")
+    mime_type = body.get("mime_type", "image/jpeg")
+    element_type = str(body.get("element_type") or "talent").strip().lower()
+    if element_type != "style":
+        element_type = normalize_element_type(element_type)
+    if not image_b64 and body.get("asset_url"):
+        # An existing asset can be scanned by path (style scan from the reference picker).
+        try:
+            loaded = load_asset_image_payload(str(body.get("asset_url")), "scan.png")
+            image_b64, mime_type = loaded["data"], loaded["mime_type"]
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    if not image_b64:
+        return jsonify({"ok": False, "error": "Image data missing"})
+
+    # Normalize the image before sending it to Gemini
+    try:
+        image_b64, mime_type, orig_w, orig_h, proc_w, proc_h, was_resized = \
+            normalize_image_b64(image_b64, mime_type)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Image pre-processing error: {e}"})
+
+    vocab_block = _build_vocab_prompt_block()
+    analysis_prompt = (
+        "You are a professional talent catalog specialist. Analyze this portrait photo carefully and extract structured metadata.\n"
+        "Your task: fill in EVERY field Ã¢â‚¬â€ never leave anything empty or use values outside the allowed lists.\n\n"
+        f"{vocab_block}\n\n"
+        "Additional field rules:\n"
+        "- name: INVENT a realistic first+last name that fits the person's apparent ethnicity and vibe "
+        "(e.g. Sofia Esposito, Kai Nakamura, Amara Diallo, Luca Ferretti, Yuki Tanaka, Zara Osei)\n"
+        "- description: 2 precise sentences for AI image generation Ã¢â‚¬â€ describe face shape, skin quality, "
+        "distinctive features (nose, lips, jawline, cheekbones), eye shape, expression, overall aesthetic vibe\n"
+        "- tags: JSON array of 4Ã¢â‚¬â€œ6 lowercase, single-word or hyphenated tags useful for searching "
+        "(e.g. [\"editorial\", \"beauty\", \"runway\", \"high-fashion\", \"dark-skin\", \"versatile\"])\n\n"
+        "CRITICAL: You MUST use ONLY the exact string values listed above. "
+        "Do NOT invent new values, do NOT use variations, plurals, or spaces instead of underscores.\n\n"
+        "Return ONLY a valid JSON object Ã¢â‚¬â€ no markdown fences, no extra text, no comments:\n"
+        "{\n"
+        '  "name": "...",\n'
+        '  "gender": "...",\n'
+        '  "ethnicity": "...",\n'
+        '  "age_group": "...",\n'
+        '  "skin_tone": "...",\n'
+        '  "hair_color": "...",\n'
+        '  "hair_style": "...",\n'
+        '  "eye_color": "...",\n'
+        '  "body_type": "...",\n'
+        '  "description": "...",\n'
+        '  "tags": ["...", "..."]\n'
+        "}"
+    )
+    if element_type == "style":
+        analysis_prompt = STYLE_SCAN_PROMPT
+    elif element_type != "talent":
+        analysis_prompt = build_element_analysis_prompt(element_type)
+
+    extraction = run_vision_extraction(api_key, image_b64, mime_type, analysis_prompt)
+    if not extraction.get("ok"):
+        return jsonify(extraction)
+    metadata = extraction["metadata"]
 
     # Normalize missing keys with empty values
-    defaults = {"name":"","gender":"","ethnicity":"","age_group":"","skin_tone":"",
-                "hair_color":"","hair_style":"","eye_color":"","body_type":"","description":"","tags":[]}
+    if element_type == "style":
+        defaults = {"text": ""}
+    elif element_type == "talent":
+        defaults = {"name":"","gender":"","ethnicity":"","age_group":"","skin_tone":"",
+                    "hair_color":"","hair_style":"","eye_color":"","body_type":"","description":"","tags":[]}
+    else:
+        defaults = {"name": "", **{key: "" for key in ELEMENT_TYPES[element_type]["fields"]}, "description": "", "tags": []}
     for k, v in defaults.items():
         if k not in metadata:
             metadata[k] = v
 
     return jsonify({
         "ok":         True,
+        "element_type": element_type,
         "metadata":   metadata,
-        "raw_text":   raw_text,
-        "usage":      {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": vision_cost},
+        "raw_text":   extraction["raw_text"],
+        "usage":      extraction["usage"],
         "image_info": {"orig_w": orig_w, "orig_h": orig_h,
                        "proc_w": proc_w, "proc_h": proc_h, "resized": was_resized},
     })
@@ -9780,7 +9992,8 @@ def api_save_talent():
     body        = request.get_json(silent=True) or {}
     image_b64   = body.get("image_data", "")
     mime_type   = body.get("mime_type", "image/jpeg")
-    folder_name = body.get("folder", "Model Managment")
+    element_type = normalize_element_type(body.get("element_type") or ELEMENT_FOLDER_TYPES.get(str(body.get("folder") or ""), "talent"))
+    folder_name = body.get("folder") or ELEMENT_TYPES[element_type]["folder"]
     metadata    = body.get("metadata", {})
 
     if not image_b64:
@@ -9788,7 +10001,9 @@ def api_save_talent():
 
     folder_path = os.path.join(ELEMENTS_DIR, folder_name)
     if not os.path.isdir(folder_path):
-        return jsonify({"ok": False, "error": f"Folder '{folder_name}' not found"})
+        if element_type == "talent":
+            return jsonify({"ok": False, "error": f"Folder '{folder_name}' not found"})
+        os.makedirs(folder_path, exist_ok=True)  # Locations / Props are created on first save
 
     name = metadata.get("name", "talent").strip() or "talent"
     slug = name_to_slug(name)
@@ -9850,6 +10065,21 @@ def api_save_talent():
             "created_at":  now_ts,
             "updated_at":  now_ts,
         }
+        if element_type != "talent":
+            # Environment / prop: same record shape, that type's attribute set instead of the talent one.
+            talent = {"id": slug, "name": metadata.get("name", name)}
+            for key in ELEMENT_TYPES[element_type]["fields"]:
+                talent[key] = metadata.get(key, "")
+            talent.update({
+                "description": metadata.get("description", ""),
+                "tags":        metadata.get("tags", []),
+                "profile":     {},
+                "is_favorite": False,
+                "images":      [new_img],
+                "created_at":  now_ts,
+                "updated_at":  now_ts,
+            })
+        talent["type"] = element_type
         save_talent_json(jpath, talent)
 
     return jsonify({
@@ -12835,6 +13065,8 @@ if __name__ == "__main__":
     os.makedirs(GENERATIONS_DIR, exist_ok=True)
     os.makedirs(VIDEOS_DIR, exist_ok=True)
     os.makedirs(EDIT_SESSIONS_DIR, exist_ok=True)
+    for _cfg in ELEMENT_TYPES.values():
+        os.makedirs(os.path.join(ELEMENTS_DIR, _cfg["folder"]), exist_ok=True)
     os.makedirs(REFERENCE_ARCHIVE_DIR, exist_ok=True)
     os.makedirs(REFERENCE_MASKS_DIR, exist_ok=True)
     os.makedirs(REFERENCE_RENDERS_DIR, exist_ok=True)

@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919a"></script>
-  <script defer src="/static/director_shots.js?v=20260919g"></script>
+  <script defer src="/static/director_shots.js?v=20260919h"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -2009,7 +2009,7 @@
 
     <!-- Header -->
     <div class="modal-header">
-      <h3>New Talent</h3>
+      <h3 id="wizTitle">New Talent</h3>
       <div class="modal-header-right">
         <span class="wizard-step-label" id="wizStepLabel">Upload image</span>
         <button class="modal-close-btn" onclick="closeWizard()" title="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
@@ -2018,6 +2018,11 @@
 
     <!-- Step 1: Drop zone -->
     <div class="wizard-step" id="wizStep1">
+      <div class="wiz-type-switch" id="wizTypeSwitch" role="tablist" aria-label="Element type">
+        <button type="button" class="wiz-type-btn active" data-wiz-type="talent" onclick="wizSetType('talent')">Talent</button>
+        <button type="button" class="wiz-type-btn" data-wiz-type="environment" onclick="wizSetType('environment')">Environment</button>
+        <button type="button" class="wiz-type-btn" data-wiz-type="prop" onclick="wizSetType('prop')">Prop</button>
+      </div>
       <div class="wizard-dropzone" id="wizDropzone"
            ondragover="wizDragOver(event)" ondragleave="wizDragLeave(event)" ondrop="wizDrop(event)"
            onclick="wizTriggerFile()">
@@ -2072,8 +2077,9 @@
           <img id="wizConfirmImg" src="" alt="">
           <div class="wizard-confirm-model-badge" id="wizModelBadge">gemini-3.1-flash-lite-preview</div>
         </div>
-        <!-- Metadata form -->
-        <div class="wizard-form-scroll">
+        <!-- Metadata form (talent: static; environment / prop: rendered by wizRenderDynamicForm) -->
+        <div class="wizard-form-scroll" id="wizDynamicForm" style="display:none"></div>
+        <div class="wizard-form-scroll" id="wizTalentForm">
           <div class="wiz-row">
             <div class="wiz-field wiz-field-wide">
               <label>Name</label>
@@ -14691,7 +14697,7 @@ function renderElementsGrid(items) {
   const createCard = document.createElement("div");
   createCard.className = "el-card el-card-create";
   createCard.innerHTML = `<div class="el-card-plus">+</div><span>Create new</span>`;
-  createCard.onclick = () => openNewTalentWizard();
+  createCard.onclick = () => openNewTalentWizard(elCurrentCat === "locations" ? "environment" : (elCurrentCat === "props" ? "prop" : "talent"));
   grid.appendChild(createCard);
 
   items.forEach(asset => {
@@ -14977,6 +14983,111 @@ let wizImageB64   = "";
 let wizMimeType   = "image/jpeg";
 let wizAnalyzed   = {};
 
+// Task 11: element types share the talent intake. Talent keeps WIZ_FIELDS + the static form below.
+let wizType = "talent";
+const WIZ_TYPE_CONFIG = {
+  environment: {
+    title: "New Environment", saveLabel: "Save Environment", folder: "Locations", vocab: "environment",
+    fields: [
+      { key: "name",              label: "Name",                 control: "text",     wide: true },
+      { key: "location_type",     label: "Location type",        control: "select" },
+      { key: "interior_exterior", label: "Interior or exterior", control: "select" },
+      { key: "time_of_day",       label: "Time of day",          control: "select" },
+      { key: "materials",         label: "Materials",            control: "text",     wide: true },
+      { key: "light_behavior",    label: "Light behavior",       control: "select" },
+      { key: "palette",           label: "Palette",              control: "select" },
+      { key: "period",            label: "Period",               control: "select" },
+      { key: "condition",         label: "Condition",            control: "select" },
+      { key: "tags",              label: "Tags (comma-separated)", control: "text",  wide: true },
+      { key: "description",       label: "Description",          control: "textarea", wide: true },
+    ],
+  },
+  prop: {
+    title: "New Prop", saveLabel: "Save Prop", folder: "Props", vocab: "prop",
+    fields: [
+      { key: "name",        label: "Name",                   control: "text",     wide: true },
+      { key: "category",    label: "Category",               control: "select" },
+      { key: "material",    label: "Material",               control: "select" },
+      { key: "scale",       label: "Scale",                  control: "select" },
+      { key: "period",      label: "Period",                 control: "select" },
+      { key: "condition",   label: "Condition",              control: "select" },
+      { key: "tags",        label: "Tags (comma-separated)", control: "text",     wide: true },
+      { key: "description", label: "Description",            control: "textarea", wide: true },
+    ],
+  },
+};
+let wizVocabularies = null;   // { environment: {...}, prop: {...} } from /api/elements/vocabularies
+
+async function wizEnsureVocabularies() {
+  if (wizVocabularies) return wizVocabularies;
+  try {
+    const r = await fetch("/api/elements/vocabularies");
+    const data = await r.json();
+    wizVocabularies = (data && data.vocabularies) || {};
+  } catch (e) { wizVocabularies = {}; }
+  return wizVocabularies;
+}
+
+function wizCurrentFields() {
+  if (wizType === "talent") return WIZ_FIELDS;
+  return WIZ_TYPE_CONFIG[wizType].fields.filter(f => f.key !== "tags").map(f => ({ key: f.key, label: f.label, icon: "" }));
+}
+
+function wizSetType(type) {
+  wizType = WIZ_TYPE_CONFIG[type] ? type : "talent";
+  document.querySelectorAll("#wizTypeSwitch .wiz-type-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.wizType === wizType));
+  const cfg = WIZ_TYPE_CONFIG[wizType];
+  document.getElementById("wizTitle").textContent = cfg ? cfg.title : "New Talent";
+  document.getElementById("wizSaveBtn").textContent = cfg ? cfg.saveLabel : "Save Talent";
+  const isTalent = wizType === "talent";
+  document.getElementById("wizTalentForm").style.display = isTalent ? "" : "none";
+  document.getElementById("wizDynamicForm").style.display = isTalent ? "none" : "";
+  if (!isTalent) wizEnsureVocabularies();
+}
+
+function wizRenderDynamicForm(meta) {
+  const cfg = WIZ_TYPE_CONFIG[wizType];
+  const host = document.getElementById("wizDynamicForm");
+  if (!cfg || !host) return;
+  const vocab = (wizVocabularies && wizVocabularies[cfg.vocab]) || {};
+  const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const rows = [];
+  let pending = [];
+  const flush = () => { if (pending.length) { rows.push(`<div class="wiz-row">${pending.join("")}</div>`); pending = []; } };
+  cfg.fields.forEach(f => {
+    const id = `wfx_${f.key}`;
+    const value = f.key === "tags" ? (Array.isArray(meta.tags) ? meta.tags.join(", ") : (meta.tags || "")) : (meta[f.key] || "");
+    let control;
+    if (f.control === "select" && Array.isArray(vocab[f.key]) && vocab[f.key].length) {
+      // Vocabulary-backed: options from the type's vocabulary file; an off-list value is kept as its own option.
+      const opts = vocab[f.key].slice();
+      if (value && !opts.includes(value)) opts.unshift(value);
+      control = `<select id="${id}">${opts.map(o => `<option value="${esc(o)}" ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+    } else if (f.control === "textarea") {
+      control = `<textarea id="${id}" rows="3">${esc(value)}</textarea>`;
+    } else {
+      // No vocabulary file (or free-text field): whatever the model returned, editable.
+      control = `<input type="text" id="${id}" value="${esc(value)}">`;
+    }
+    const cell = `<div class="wiz-field${f.wide ? " wiz-field-wide" : ""}"><label>${esc(f.label)}</label>${control}</div>`;
+    if (f.wide) { flush(); rows.push(`<div class="wiz-row">${cell}</div>`); }
+    else { pending.push(cell); if (pending.length === 2) flush(); }
+  });
+  flush();
+  host.innerHTML = rows.join("");
+}
+
+function wizReadDynamicForm() {
+  const cfg = WIZ_TYPE_CONFIG[wizType];
+  const out = {};
+  cfg.fields.forEach(f => {
+    const el = document.getElementById(`wfx_${f.key}`);
+    const raw = (el?.value || "").trim();
+    out[f.key] = f.key === "tags" ? raw.split(",").map(t => t.trim()).filter(Boolean) : raw;
+  });
+  return out;
+}
+
 const WIZ_FIELDS = [
   { key: "name",        label: "Name",         icon: "" },
   { key: "gender",      label: "Gender",       icon: "" },
@@ -15002,7 +15113,7 @@ function wizStartScan() {
   wizDetectTimers = [];
   container.innerHTML = "";
 
-  WIZ_FIELDS.forEach((f, i) => {
+  wizCurrentFields().forEach((f, i) => {
     const row = document.createElement("div");
     row.className = "wiz-detect-row";
     row.id = `wdr_${f.key}`;
@@ -15023,7 +15134,7 @@ function wizCompleteScan(meta) {
   wizDetectTimers.forEach(t => clearTimeout(t));
   wizDetectTimers = [];
 
-  WIZ_FIELDS.forEach(f => {
+  wizCurrentFields().forEach(f => {
     const row = document.getElementById(`wdr_${f.key}`);
     if (!row) return;
     const val = f.key === "tags"
@@ -15036,10 +15147,11 @@ function wizCompleteScan(meta) {
   });
 }
 
-function openNewTalentWizard() {
+function openNewTalentWizard(type = "talent") {
   wizImageB64 = "";
   wizMimeType = "image/jpeg";
   wizAnalyzed = {};
+  wizSetType(type);
   document.getElementById("wizDropzone").classList.remove("wiz-drop-active");
   document.getElementById("wizStep1").style.display = "";
   document.getElementById("wizStep2").style.display = "none";
@@ -15143,7 +15255,7 @@ async function wizAnalyzeImage(b64, mimeType, dataUrl) {
     const r    = await fetch("/api/elements/analyze-image", {
       method:  "POST",
       headers: {"Content-Type":"application/json"},
-      body:    JSON.stringify({data: b64, mime_type: mimeType})
+      body:    JSON.stringify({data: b64, mime_type: mimeType, element_type: wizType})
     });
     const data = await r.json();
     wizLog("info", "HTTP response received", {ok: data.ok, has_metadata: !!data.metadata, error: data.error || null});
@@ -15170,7 +15282,8 @@ async function wizAnalyzeImage(b64, mimeType, dataUrl) {
   await new Promise(r => setTimeout(r, 900));
 
   // Popola il form e vai allo step 3
-  wizFillForm(wizAnalyzed);
+  if (wizType === "talent") wizFillForm(wizAnalyzed);
+  else { await wizEnsureVocabularies(); wizRenderDynamicForm(wizAnalyzed); wizLog("success", `${WIZ_TYPE_CONFIG[wizType].title} form filled`); }
   document.getElementById("wizStep2").style.display = "none";
   document.getElementById("wizStep3").style.display = "";
   document.getElementById("wizConfirmImg").src = dataUrl;
@@ -15228,8 +15341,10 @@ async function saveTalent() {
   btn.disabled = true;
   btn.textContent = "Saving...";
 
-  const metadata = wizReadForm();
-  if (!metadata.name) { showError("Please enter a name for the talent."); btn.disabled = false; btn.textContent = "Save Talent"; return; }
+  const cfg = WIZ_TYPE_CONFIG[wizType];
+  const saveLabel = cfg ? cfg.saveLabel : "Save Talent";
+  const metadata = wizType === "talent" ? wizReadForm() : wizReadDynamicForm();
+  if (!metadata.name) { showError(`Please enter a name for the ${cfg ? wizType : "talent"}.`); btn.disabled = false; btn.textContent = saveLabel; return; }
 
   try {
     const r    = await fetch("/api/elements/save-talent", {
@@ -15238,7 +15353,8 @@ async function saveTalent() {
       body:    JSON.stringify({
         image_data: wizImageB64,
         mime_type:  wizMimeType,
-        folder:     "Model Managment",
+        folder:     cfg ? cfg.folder : "Model Managment",
+        element_type: wizType,
         metadata,
       })
     });
@@ -15249,12 +15365,12 @@ async function saveTalent() {
     // Reload elements grid
     elCurrentPage = 1;
     await loadElements();
-    showError(`Talent "${metadata.name}" saved successfully!`, "success");
+    showError(`${cfg ? cfg.title.replace("New ", "") : "Talent"} "${metadata.name}" saved successfully!`, "success");
   } catch(e) {
     showError("Save failed: " + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = "Save Talent";
+    btn.textContent = saveLabel;
   }
 }
 

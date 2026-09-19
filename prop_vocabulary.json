@@ -1,0 +1,71 @@
+{
+  "category": [
+    "furniture",
+    "vehicle",
+    "tool",
+    "weapon",
+    "device",
+    "document",
+    "food",
+    "drink",
+    "container",
+    "lighting",
+    "textile",
+    "instrument",
+    "toy",
+    "jewelry",
+    "bag",
+    "artwork",
+    "signage",
+    "plant",
+    "other"
+  ],
+  "material": [
+    "wood",
+    "metal",
+    "glass",
+    "plastic",
+    "ceramic",
+    "paper",
+    "leather",
+    "fabric",
+    "stone",
+    "concrete",
+    "rubber",
+    "mixed",
+    "organic"
+  ],
+  "scale": [
+    "handheld",
+    "tabletop",
+    "furniture_size",
+    "human_size",
+    "vehicle_size",
+    "architectural"
+  ],
+  "period": [
+    "contemporary",
+    "2010s",
+    "2000s",
+    "1990s",
+    "1980s",
+    "1970s",
+    "1960s",
+    "1950s",
+    "mid_century",
+    "early_20th",
+    "19th_century",
+    "pre_1800",
+    "futuristic",
+    "timeless"
+  ],
+  "condition": [
+    "new",
+    "clean",
+    "used",
+    "worn",
+    "weathered",
+    "broken",
+    "antique"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "id": "mateo_rodriguez",
+  "name": "Mateo Rodriguez",
+  "gender": "male",
+  "ethnicity": "hispanic_latino",
+  "age_group": "young_adult",
+  "skin_tone": "medium_olive",
+  "hair_color": "black",
+  "hair_style": "short_curly",
+  "eye_color": "brown",
+  "body_type": "lean_athletic",
+  "description": "Oval face with high cheekbones, a strong jawline, and smooth olive skin. Deep-set brown eyes under thick brows with a neutral, intense expression.",
+  "tags": [
+    "headshot",
+    "masculine",
+    "commercial",
+    "clean-cut",
+    "versatile"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "mateo_rodriguez_001.jpg",
+      "path": "mateo_rodriguez_001.jpg",
+      "added_at": "2026-09-19T14:27:08.721266",
+      "is_primary": true,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-19T14:27:08.721266",
+  "updated_at": "2026-09-19T14:27:08.721266"
+}

@@ -9973,3 +9973,10 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 
 .ds-style-form { display: grid; gap: 10px; border: 1px dashed var(--border2); border-radius: 10px; padding: 10px 12px; }
 .ds-style-save { border-color: var(--accent); }
+
+/* ---- Task 11: element type switch in the intake wizard; style scan ---- */
+.wiz-type-switch { display: inline-flex; gap: 2px; border: 1px solid var(--border2); border-radius: 999px; padding: 2px; margin-bottom: 12px; }
+.wiz-type-btn { border: 0; background: transparent; color: var(--text-dim); font-size: 12px; font-weight: 700; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+.wiz-type-btn.active { color: var(--text); background: rgba(var(--accent-rgb), 0.16); }
+.ds-style-scan { cursor: pointer; }
+.ds-style-form.is-drop { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.06); }

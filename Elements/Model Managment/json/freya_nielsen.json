@@ -1,0 +1,33 @@
+{
+  "id": "freya_nielsen",
+  "name": "Freya Nielsen",
+  "gender": "female",
+  "ethnicity": "northern_european",
+  "age_group": "young_adult",
+  "skin_tone": "very_fair",
+  "hair_color": "red",
+  "hair_style": "tied_back",
+  "eye_color": "blue",
+  "body_type": "slender",
+  "description": "Striking young woman with sharp bone structure and luminous, very fair skin. Features intense blue eyes and slicked-back red hair for a clean, editorial look.",
+  "tags": [
+    "editorial",
+    "beauty",
+    "minimalist",
+    "high-fashion",
+    "redhead"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "freya_nielsen_001.jpg",
+      "path": "freya_nielsen_001.jpg",
+      "added_at": "2026-09-19T14:10:33.421644",
+      "is_primary": true,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-19T14:10:33.421644",
+  "updated_at": "2026-09-19T14:10:33.421644"
+}

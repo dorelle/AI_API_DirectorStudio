@@ -750,7 +750,12 @@
       <div class="ds-field ds-field-wide"><div class="ds-field-label"><span>Text</span></div><textarea class="ds-field-input" id="dsStyleText" rows="3" placeholder="Grade, film stock, lighting register, photographic treatment.">${esc(form.text || "")}</textarea></div>
       <div class="ds-field ds-field-wide"><div class="ds-field-label"><span>Look board</span></div>
         <div class="ds-style-board">${images || '<span class="ds-chip-empty">No images yet.</span>'}</div>
-        <div class="ds-attach-actions"><button type="button" class="history-filter-toggle" id="dsStyleAddImages">+ Add images</button></div>
+        <div class="ds-attach-actions">
+          <button type="button" class="history-filter-toggle" id="dsStyleAddImages">+ Add images</button>
+          <button type="button" class="history-filter-toggle ds-style-scan" id="dsStyleScanPick" title="Pick a reference and write the treatment from it">Scan reference\u2026</button>
+          <label class="history-filter-toggle ds-style-scan" title="Drop or choose an image file to scan">Scan file<input type="file" id="dsStyleScanFile" accept="image/*" style="display:none"></label>
+          <span class="ds-shot-status-line" id="dsStyleScanStatus"></span>
+        </div>
       </div>
       <label class="ds-field-check"><input type="checkbox" id="dsStyleProjectOnly" ${form.projectOnly ? "checked" : ""}> <span>Only for this project (unchecked = available to every project)</span></label>
       <div class="ds-attach-actions">
@@ -844,6 +849,43 @@
       stylePickingImages = true;
       if (typeof window.openLovedPicker === "function") window.openLovedPicker("shot-refs");
     });
+    host.querySelector("#dsStyleScanPick")?.addEventListener("click", () => {
+      syncStyleFormFromInputs();
+      styleScanPending = true;
+      stylePickingImages = true;
+      if (typeof window.openLovedPicker === "function") window.openLovedPicker("shot-refs");
+    });
+    host.querySelector("#dsStyleScanFile")?.addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      syncStyleFormFromInputs();
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || "");
+        const data = dataUrl.split(",")[1] || "";
+        scanStyleImage({ data, mime_type: file.type || "image/png", name: file.name });
+      };
+      reader.readAsDataURL(file);
+    });
+    const dropzone = host.querySelector("#dsStyleForm");
+    if (dropzone) {
+      dropzone.addEventListener("dragover", (event) => { event.preventDefault(); dropzone.classList.add("is-drop"); });
+      dropzone.addEventListener("dragleave", () => dropzone.classList.remove("is-drop"));
+      dropzone.addEventListener("drop", (event) => {
+        dropzone.classList.remove("is-drop");
+        const file = event.dataTransfer?.files && event.dataTransfer.files[0];
+        if (file && file.type.startsWith("image/")) {
+          event.preventDefault();
+          syncStyleFormFromInputs();
+          const reader = new FileReader();
+          reader.onload = () => scanStyleImage({ data: String(reader.result || "").split(",")[1] || "", mime_type: file.type, name: file.name });
+          reader.readAsDataURL(file);
+          return;
+        }
+        const url = urlFromDataTransfer(event.dataTransfer);
+        if (url) { event.preventDefault(); syncStyleFormFromInputs(); scanStyleImage({ asset_url: url }); }
+      });
+    }
     host.querySelectorAll("[data-style-img-remove]").forEach((button) => {
       button.addEventListener("click", () => {
         syncStyleFormFromInputs();
@@ -885,9 +927,33 @@
     if (only) styleForm.projectOnly = only.checked;
   }
 
+  let styleScanPending = false;
+
+  async function scanStyleImage(body) {
+    if (!styleForm) return;
+    const status = $("dsStyleScanStatus");
+    if (status) { status.textContent = "Scanning\u2026 Gemini Vision is reading the look."; status.className = "ds-shot-status-line"; }
+    try {
+      const payload = await api("/api/styles/scan", { method: "POST", body });
+      if (payload.text) styleForm.text = payload.text;   // scan output replaces the text; still editable
+      if (payload.image_url && !styleForm.images.includes(payload.image_url)) styleForm.images.push(payload.image_url);
+      renderEditor();
+      const after = $("dsStyleScanStatus");
+      if (after) { after.textContent = `Scanned \u00b7 $${Number(payload.usage?.cost_usd || 0).toFixed(5)}`; after.className = "ds-shot-status-line success"; }
+    } catch (error) {
+      const after = $("dsStyleScanStatus") || status;
+      if (after) { after.textContent = error.message || "Scan failed."; after.className = "ds-shot-status-line error"; }
+    }
+  }
+
   function onStyleImagesPicked(urls) {
     stylePickingImages = false;
     if (!styleForm) return;
+    if (styleScanPending) {
+      styleScanPending = false;
+      if (urls && urls[0]) scanStyleImage({ asset_url: urls[0] });
+      return;
+    }
     (urls || []).forEach((url) => { const path = String(url || "").trim(); if (path && !styleForm.images.includes(path)) styleForm.images.push(path); });
     renderEditor();
   }
