@@ -10085,3 +10085,17 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .disk-none { font-size: 12px; color: var(--text-dim); margin: 0; }
 .disk-confirm { margin-top: 12px; border: 1px solid rgba(255, 79, 79, 0.5); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
 .disk-confirm-title { font-weight: 700; color: var(--red); font-size: 13px; }
+
+/* ---- Task 15: prompt compiler ---- */
+.ds-compile-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.ds-compile-btn { border-color: rgba(var(--accent-rgb), 0.6); }
+.ds-compile-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ds-compile-status { font-size: 11px; color: var(--text-dim); }
+.ds-compile-status.success { color: var(--green); }
+.ds-compile-status.error { color: var(--red); }
+.ds-compile-review { margin-top: 8px; border: 1px dashed rgba(var(--accent-rgb), 0.6); border-radius: 10px; padding: 10px; display: grid; gap: 10px; background: rgba(var(--accent-rgb), 0.04); }
+.ds-compile-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.ds-compile-text { font-size: 12px; line-height: 1.5; white-space: pre-wrap; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface); max-height: 260px; overflow: auto; }
+.ds-compile-text.is-proposed { border-color: rgba(var(--accent-rgb), 0.5); }
+.ds-compile-text em { color: var(--text-muted); }
+.ds-compile-context { font-size: 11px; line-height: 1.4; white-space: pre-wrap; max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface2); color: var(--text-dim); margin: 0; }

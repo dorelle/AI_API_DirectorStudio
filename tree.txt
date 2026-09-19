@@ -1,0 +1,115 @@
+Folder PATH listing for volume Windows
+Volume serial number is EE46-6037
+C:.
+|   .gitattributes
+|   .gitignore
+|   app.py
+|   config.json
+|   INSTALL.md
+|   nbs.py
+|   README.md
+|   RELEASE_v1.3.md
+|   requirements.txt
+|   start.bat
+|   start.sh
+|   studio.db
+|   talent_vocabulary.json
+|   tree.txt
+|   
++---docs
+|   \---images
+|           image-generation-workflow.png
+|           reference-mask-editor.png
+|           upscale-compare-view.png
+|           video-generation-workflow.png
+|           
++---Elements
+|   \---Model Managment
+|       |   elena_rossi_001.jpg
+|       |   kenji_sato_001.jpg
+|       |   
+|       +---images
+|       |       model_01.jpg
+|       |       model_05.jpg
+|       |       model_107.jpg
+|       |       model_20.jpg
+|       |       model_280.jpg
+|       |       model_33.jpg
+|       |       model_343.jpg
+|       |       model_384.jpg
+|       |       model_532.jpg
+|       |       model_692.jpg
+|       |       model_827.jpg
+|       |       model_837.jpg
+|       |       model_848.jpg
+|       |       model_999.png
+|       |       
+|       \---json
+|               elena_rossi.json
+|               kenji_sato.json
+|               model_01.json
+|               model_05.json
+|               model_107.json
+|               model_20.json
+|               model_280.json
+|               model_33.json
+|               model_343.json
+|               model_384.json
+|               model_532.json
+|               model_692.json
+|               model_827.json
+|               model_837.json
+|               model_848.json
+|               model_999.json
+|               
++---Image_assets
+|   +---generations
+|   |   |   .gitkeep
+|   |   |   
+|   |   \---uncategorized
+|   |       \---uncategorized
+|   |           \---uncategorized
+|   |                   golden_flower.json
+|   |                   golden_flower.png
+|   |                   golden_flower_2.json
+|   |                   golden_flower_2.png
+|   |                   
+|   +---loved
+|   |       .gitkeep
+|   |       
+|   +---reference_archive
+|   |   |   .gitkeep
+|   |   |   _index.json
+|   |   |   
+|   |   \---2026-04-03
+|   |           065936750092_ref_1_a2e2f5899d_generated-1775174783316.png
+|   |           
+|   +---reference_masks
+|   |       .gitkeep
+|   |       
+|   +---reference_renders
+|   |       .gitkeep
+|   |       
+|   \---videos
+|           .gitkeep
+|           
++---published
+|       .gitkeep
+|       
++---static
+|       favicon.svg
+|       project_meta.js
+|       style.css
+|       
+\---templates
+        asset_gallery.html
+        credits.html
+        index.html
+        login.html
+        loved.html
+        published.html
+        reports.html
+        settings.html
+        workbench.html
+        _project_meta_bar.html
+        

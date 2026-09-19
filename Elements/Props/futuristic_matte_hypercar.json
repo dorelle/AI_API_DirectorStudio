@@ -1,0 +1,31 @@
+{
+  "id": "futuristic_matte_hypercar",
+  "name": "Futuristic Matte Hypercar",
+  "category": "vehicle",
+  "material": "mixed",
+  "scale": "vehicle_size",
+  "period": "futuristic",
+  "condition": "new",
+  "description": "Low-slung matte carbon fiber body with sharp fins and glowing orange LED light signatures. Features a bubble cockpit, large rear diffuser, and illuminated wheel rims.",
+  "tags": [
+    "hypercar",
+    "concept",
+    "aerodynamic",
+    "carbon-fiber",
+    "futuristic"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "futuristic_matte_hypercar_001.jpg",
+      "path": "futuristic_matte_hypercar_001.jpg",
+      "added_at": "2026-09-19T15:06:11.424166",
+      "is_primary": true,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-19T15:06:11.424166",
+  "updated_at": "2026-09-19T15:06:11.424166",
+  "type": "prop"
+}

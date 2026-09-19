@@ -37,7 +37,8 @@
     { key: "assets", label: "Assets", step: 4, list: "reference_assets", addLabel: "+ Add references", empty: "No references yet. Add plates, garments, props or style images." },
     { key: "style", label: "Style", style: true },
     { key: "prompt", label: "Prompt", step: 5, hint: "The text the model receives.", fields: [
-      { key: "prompt", label: "Prompt", type: "textarea", rows: 4, wide: true },
+      { key: "scene_prompt", label: "Scene prompt \u2014 the frame (carry it to the Generator for a first frame)", type: "textarea", rows: 4, wide: true, compile: true },
+      { key: "prompt", label: "Motion prompt \u2014 sent to the render", type: "textarea", rows: 4, wide: true, compile: true },
       { key: "negative_prompt", label: "Negative prompt", type: "textarea", wide: true },
     ] },
     { key: "generation", label: "Generation", step: 6, hint: "First frame, engine, and whether it continues from the previous shot.", fields: [
@@ -734,10 +735,14 @@
       control = `<input class="ds-field-input" data-field="${field.key}" type="${field.type === "number" ? "number" : "text"}" ${field.type === "number" ? 'step="0.1" min="0"' : ""} value="${esc(value)}" ${listId ? `list="${listId}"` : ""} autocomplete="off">` +
         (field.list ? `<datalist id="${listId}">${field.list.map((option) => `<option value="${esc(option)}"></option>`).join("")}</datalist>` : "");
     }
+    const compile = field.compile
+      ? `<div class="ds-compile-row"><button type="button" class="history-filter-toggle ds-compile-btn" data-compile="${field.key}" ${locked ? "disabled" : ""} title="${locked ? "Locked \u2014 unlock the field to compile into it" : "Have the agent write this from the playbook, scene, cast, references and camera"}">\u2726 Compile</button><span class="ds-compile-status" data-compile-status="${field.key}"></span></div><div class="ds-compile-review" data-compile-review="${field.key}" style="display:none"></div>`
+      : "";
     return `<div class="ds-field${locked ? " is-locked" : ""}${field.wide ? " ds-field-wide" : ""}" data-field-wrap="${field.key}">
       ${field.type === "checkbox" ? "" : `<div class="ds-field-label"><span>${esc(field.label)}</span>${lock}</div>`}
       ${control}
       ${field.type === "checkbox" ? lock : ""}
+      ${compile}
     </div>`;
   }
 
@@ -793,6 +798,7 @@
     });
     bindAttachmentLists(shot);
     bindStyleSection(shot);
+    host.querySelectorAll("[data-compile]").forEach((button) => button.addEventListener("click", () => compileField(shot.id, button.dataset.compile)));
     ensureStyles().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureVideoModels().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
@@ -1436,6 +1442,76 @@
       renderSceneEditor();
     } catch (error) {
       setSceneStatus(error.message || "Could not change the lock.", "error");
+    }
+  }
+
+  // ---- prompt compiler (Task 15): proposal -> review -> accept writes + locks ----
+  const compileProposals = {};   // `${shotId}:${field}` -> last proposal
+
+  async function compileField(shotId, field) {
+    const shot = findShot(shotId);
+    const status = document.querySelector(`[data-compile-status="${field}"]`);
+    const review = document.querySelector(`[data-compile-review="${field}"]`);
+    const button = document.querySelector(`[data-compile="${field}"]`);
+    if (!shot || !status || !review) return;
+    if (Array.isArray(shot.locked_fields) && shot.locked_fields.includes(field)) {
+      status.textContent = "Locked. Unlock the field to compile into it."; status.className = "ds-compile-status error"; return;
+    }
+    if (button) { button.disabled = true; button.textContent = "Compiling\u2026"; }
+    status.textContent = "Assembling the playbook, scene, cast, references and camera\u2026"; status.className = "ds-compile-status";
+    try {
+      const payload = await api(`/api/shots/${shotId}/compile`, { method: "POST", body: { field } });
+      compileProposals[`${shotId}:${field}`] = payload;
+      const usage = payload.usage || {};
+      const tokens = usage.prompt_tokens != null ? `${Number(usage.prompt_tokens).toLocaleString()} in / ${Number(usage.completion_tokens || 0).toLocaleString()} out tokens` : `~${Number(payload.system_tokens || 0).toLocaleString()} tokens sent`;
+      status.textContent = `Proposal ready \u00b7 ${tokens} \u00b7 ${payload.slots.length} reference(s) numbered`; status.className = "ds-compile-status success";
+      renderCompileReview(shot, field, payload);
+    } catch (error) {
+      status.textContent = error.message || "Compile failed."; status.className = "ds-compile-status error";
+    } finally {
+      if (button) { button.disabled = false; button.textContent = "\u2726 Compile"; }
+    }
+  }
+
+  function renderCompileReview(shot, field, payload) {
+    const review = document.querySelector(`[data-compile-review="${field}"]`);
+    if (!review) return;
+    const current = String(shot[field] || "");
+    review.style.display = "";
+    review.innerHTML = `
+      <div class="ds-compile-cols">
+        <div class="ds-compile-col"><div class="ds-field-label"><span>Current</span></div><div class="ds-compile-text is-current">${current ? esc(current) : "<em>(empty)</em>"}</div></div>
+        <div class="ds-compile-col"><div class="ds-field-label"><span>Proposed</span></div><div class="ds-compile-text is-proposed">${esc(payload.proposal)}</div></div>
+      </div>
+      <div class="ds-attach-actions">
+        <button type="button" class="history-filter-toggle ds-style-save" data-compile-accept="${field}">Accept \u2014 write and lock</button>
+        <button type="button" class="history-filter-toggle" data-compile-recompile="${field}">Recompile</button>
+        <button type="button" class="history-filter-toggle" data-compile-discard="${field}">Discard</button>
+        <button type="button" class="ds-shot-mini" data-compile-context="${field}" title="What the compiler saw">context</button>
+      </div>
+      <pre class="ds-compile-context" data-compile-context-box="${field}" style="display:none">${esc(payload.context)}</pre>`;
+    review.querySelector("[data-compile-accept]").addEventListener("click", () => acceptCompile(shot.id, field));
+    review.querySelector("[data-compile-recompile]").addEventListener("click", () => compileField(shot.id, field));
+    review.querySelector("[data-compile-discard]").addEventListener("click", () => { delete compileProposals[`${shot.id}:${field}`]; review.style.display = "none"; review.innerHTML = ""; const st = document.querySelector(`[data-compile-status="${field}"]`); if (st) st.textContent = "Discarded. Nothing was written."; });
+    review.querySelector("[data-compile-context]").addEventListener("click", () => { const box = review.querySelector("[data-compile-context-box]"); box.style.display = box.style.display === "none" ? "" : "none"; });
+  }
+
+  async function acceptCompile(shotId, field) {
+    const payload = compileProposals[`${shotId}:${field}`];
+    const shot = findShot(shotId);
+    if (!payload || !shot) return;
+    const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
+    if (!locked.includes(field)) locked.push(field);   // accepted by the user -> locked, like any hand edit
+    try {
+      const result = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { [field]: payload.proposal, locked_fields: locked } });
+      const index = shots.findIndex((item) => item.id === result.shot.id);
+      if (index >= 0) shots[index] = result.shot;
+      delete compileProposals[`${shotId}:${field}`];
+      renderList();
+      renderEditor();
+      flashSaved("Written and locked");
+    } catch (error) {
+      setStatusLine(error.message || "Could not write the prompt.", "error");
     }
   }
 

@@ -2266,6 +2266,8 @@ def ensure_shots_columns(conn):
         "style_enabled":    "INTEGER NOT NULL DEFAULT 1",
         # Task 12: the scene a shot belongs to (the free-text `scene` stays as it is)
         "scene_id":         "INTEGER",
+        # Task 15: the frame prompt; `prompt` stays the motion prompt the render sends
+        "scene_prompt":     "TEXT NOT NULL DEFAULT ''",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2667,7 +2669,7 @@ SHOT_TEXT_FIELDS = (
     "scene", "beat_marker", "action_text", "dialogue", "audio_cue",
     "shot_size", "angle", "lens", "aperture", "speed_ramp",
     "first_frame", "last_frame", "engine", "note",
-    "prompt", "negative_prompt",
+    "prompt", "negative_prompt", "scene_prompt",
 )
 # Ordered JSON arrays of ids/paths. Order is the reference order providers see.
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
@@ -3597,6 +3599,11 @@ def is_app_temp_dir(path: str) -> tuple[bool, str]:
         return True, "app prefix + marker"
     if LEGACY_HARNESS_TEMP_RE.match(name) and os.path.isfile(os.path.join(real, "nbs.py")):
         return True, "legacy test-harness copy"
+    if name.startswith(APP_TEMP_PREFIX):
+        # residue of an interrupted cleanup: our prefix, and nothing inside but a copied studio.db / the marker
+        leftovers = set(os.listdir(real))
+        if leftovers and leftovers <= {APP_TEMP_MARKER, "studio.db"}:
+            return True, "app prefix, cleanup residue (studio.db only)"
     return False, "not app-created"
 
 
@@ -4030,6 +4037,191 @@ def resolve_element_primary_image_url(element_id: str) -> str:
             if image_path:
                 return f"/elements/{folder_name}/{image_path}"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Prompt compiler (Director Studio, Task 15). Proposes text for a shot's prompt fields;
+# writes nothing. The user accepts in the editor, which writes and locks the field.
+# ---------------------------------------------------------------------------
+# ===== COMPILER RULES - the only default instructions; edit here =====
+COMPILER_RULES = (
+    "Compiler rules:\n"
+    "- Say what is different about this shot. Do not re-describe what the playbook, the scene or the references already establish.\n"
+    "- Name what must stay unchanged from the references, explicitly.\n"
+    "- Address references by position (reference 1, reference 2, ...), matching how they are sent.\n"
+    "- Replace vague style words with visible, checkable instructions.\n"
+    "- Subject first, then setting, then framing.\n"
+    "- For a motion prompt: one clear action, what moves, what the camera does, what must not change. Not the whole scene.\n"
+    "- Output prose, not JSON, not bullet points, not headings."
+)
+# ===== end compiler rules =====
+
+COMPILE_FIELDS = {
+    "scene_prompt": "Write the SCENE PROMPT for this shot: the single frame to generate as a still image before any motion. "
+                    "It is what the first frame shows. Prose only.",
+    "prompt": "Write the MOTION PROMPT for this shot: the text sent with the starting frame to the video model. "
+              "One clear action, what moves, what the camera does, what must not change. Do not describe the whole scene - "
+              "the starting image already shows it. Prose only.",
+}
+
+
+def list_shot_reference_slots(shot: dict) -> list[dict]:
+    """The positional reference numbering the model will see, mirroring build_shot_render_payload:
+    elements in array order (a cast entry expands to its dressed images), then reference assets,
+    then an enabled style's images. Positions start at 1. Skipped items (no image) get no slot."""
+    slots = []
+    for entry in shot.get("elements") or []:
+        ref = entry["ref"] if isinstance(entry, dict) else str(entry)
+        role = entry.get("role", "unassigned") if isinstance(entry, dict) else "unassigned"
+        if ref.startswith(CAST_REF_PREFIX):
+            member = get_cast_member(ref[len(CAST_REF_PREFIX):])
+            if not member:
+                continue
+            for index, url in enumerate(member.get("images") or []):
+                slots.append({"position": len(slots) + 1, "kind": "cast", "role": role, "url": url,
+                              "label": f"{member.get('handle') or ''} {member.get('character_name') or ''} / look {member.get('look_name') or '-'} (image {index + 1} of {len(member.get('images') or [])})".strip(),
+                              "name": f"cast-{(member.get('handle') or ref).lstrip('@')}-{index + 1}"})
+            continue
+        url = resolve_element_primary_image_url(ref)
+        if not url:
+            continue
+        name = ""
+        for folder_name in ELEMENTS_CATEGORIES:
+            folder_path = os.path.join(ELEMENTS_DIR, folder_name)
+            if not os.path.isdir(folder_path):
+                continue
+            for json_path in list_talent_jsons(folder_path):
+                talent = load_talent_json(json_path)
+                if talent and str(talent.get("id", "")) == ref:
+                    name = f"{talent.get('name') or ref} ({normalize_element_type(talent.get('type') or ELEMENT_FOLDER_TYPES.get(folder_name, 'talent'))})"
+                    break
+            if name:
+                break
+        slots.append({"position": len(slots) + 1, "kind": "element", "role": role, "url": url, "label": name or ref, "name": f"element-{ref}"})
+    for index, entry in enumerate(shot.get("reference_assets") or []):
+        ref = entry["ref"] if isinstance(entry, dict) else str(entry)
+        role = entry.get("role", "unassigned") if isinstance(entry, dict) else "unassigned"
+        slots.append({"position": len(slots) + 1, "kind": "reference", "role": role, "url": ref, "label": os.path.basename(ref), "name": f"reference-{index + 1}"})
+    style = shot.get("style") if (shot.get("style_id") and shot.get("style_enabled", True)) else None
+    if style:
+        for index, url in enumerate(style.get("images") or []):
+            slots.append({"position": len(slots) + 1, "kind": "style", "role": "style", "url": url, "label": f"style '{style.get('name')}' image {index + 1}", "name": f"style-{index + 1}"})
+    return slots
+
+
+def _script_excerpt(script: str, shot: dict, max_chars: int = 6000) -> str:
+    text = str(script or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    lines = text.splitlines()
+    needles = [w.lower() for w in re.findall(r"[A-Za-z']{4,}", f"{shot.get('action_text', '')} {shot.get('dialogue', '')}")]
+    best, best_score = 0, -1
+    for index, line in enumerate(lines):
+        low = line.lower()
+        score = sum(1 for w in needles if w in low)
+        if score > best_score:
+            best, best_score = index, score
+    start = max(0, best - 25)
+    excerpt = "\n".join(lines[start:start + 50])
+    return f"[excerpt: lines {start + 1}-{min(len(lines), start + 50)} of {len(lines)}; the full script was too long]\n{excerpt}"
+
+
+def build_shot_compile_context(shot: dict, project: dict) -> tuple[str, list[dict]]:
+    """Everything the compiler sees for one shot, as text, plus the reference slots."""
+    scene = get_scene(shot["scene_id"]) if shot.get("scene_id") else None
+    shots = fetch_shots(project["id"])
+    index = next((i for i, item in enumerate(shots) if item["id"] == shot["id"]), -1)
+    prev_shot = shots[index - 1] if index > 0 else None
+    next_shot = shots[index + 1] if 0 <= index < len(shots) - 1 else None
+    settings = project.get("settings") or {}
+    slots = list_shot_reference_slots(shot)
+
+    lines = [f"# PROJECT: {project['name']}"]
+    for key in ("register", "aspect_ratio", "format", "runtime", "frame_rate"):
+        if settings.get(key):
+            lines.append(f"{key}: {settings[key]}")
+    playbook = str(project.get("playbook") or "").strip()
+    lines.append("## PLAYBOOK\n" + (playbook or "(no playbook)"))
+
+    lines.append("\n## SCENE")
+    if scene:
+        lines.append(f"{scene['slug']} {scene.get('name') or ''}".strip())
+        if scene.get("brief"):
+            lines.append(f"brief: {scene['brief']}")
+        if scene.get("environment_id"):
+            env_name = scene["environment_id"]; env_desc = ""
+            for json_path in list_talent_jsons(os.path.join(ELEMENTS_DIR, ELEMENT_TYPES["environment"]["folder"])) if os.path.isdir(os.path.join(ELEMENTS_DIR, ELEMENT_TYPES["environment"]["folder"])) else []:
+                talent = load_talent_json(json_path)
+                if talent and str(talent.get("id")) == str(scene["environment_id"]):
+                    env_name = talent.get("name") or env_name; env_desc = talent.get("description") or ""
+                    break
+            lines.append(f"environment: {env_name}" + (f" - {env_desc}" if env_desc else ""))
+        excerpt = _script_excerpt(scene.get("script") or "", shot)
+        if excerpt:
+            lines.append("script:\n" + excerpt)
+    else:
+        lines.append("(this shot has no scene)" + (f"; free-text scene label: {shot['scene']}" if shot.get("scene") else ""))
+
+    lines.append(f"\n## SHOT {shot['slug']} (#{index + 1} of {len(shots)})")
+    for key, label in (("action_text", "action"), ("dialogue", "dialogue"), ("audio_cue", "audio"), ("beat_marker", "beat")):
+        if shot.get(key):
+            lines.append(f"{label}: {shot[key]}")
+    if shot.get("duration_seconds") not in (None, ""):
+        lines.append(f"duration: {shot['duration_seconds']:g}s")
+    lines.append("## CAMERA")
+    camera = [f"{key}: {shot[key]}" for key in ("shot_size", "angle", "lens", "aperture", "speed_ramp") if shot.get(key)]
+    if shot.get("movement"):
+        camera.append("movement: " + ", ".join(shot["movement"]))
+    lines.append("\n".join(camera) if camera else "(no camera fields set)")
+    if shot.get("first_frame"):
+        lines.append(f"first frame set: yes ({os.path.basename(str(shot['first_frame']))})")
+
+    lines.append("\n## REFERENCES (numbered exactly as they are sent to the model)")
+    if slots:
+        for slot in slots:
+            lines.append(f"reference {slot['position']}: [{slot['kind']}, role {slot['role']}] {slot['label']}")
+    else:
+        lines.append("(no references attached)")
+    style = shot.get("style") if (shot.get("style_id") and shot.get("style_enabled", True)) else None
+    lines.append("\n## STYLE")
+    lines.append(f"{style.get('name')}: {style.get('text') or '(no text)'} - {len(style.get('images') or [])} image(s), appended after the other references" if style else "(no style applied)")
+
+    lines.append("\n## NEIGHBORS (for continuity)")
+    lines.append(f"previous {prev_shot['slug']}: {prev_shot.get('action_text') or '(no action text)'}" if prev_shot else "previous: (none - first shot)")
+    lines.append(f"next {next_shot['slug']}: {next_shot.get('action_text') or '(no action text)'}" if next_shot else "next: (none - last shot)")
+
+    lines.append("\n## CURRENT VALUES (drafts; you are writing a replacement, they need not be kept)")
+    lines.append(f"scene_prompt: {shot.get('scene_prompt') or '(empty)'}")
+    lines.append(f"prompt (motion): {shot.get('prompt') or '(empty)'}")
+    return "\n".join(lines), slots
+
+
+def compile_shot_prompt(shot_id, field: str) -> dict:
+    """Returns a proposal. Never writes. Refuses a locked field outright."""
+    if field not in COMPILE_FIELDS:
+        raise ValueError("field must be prompt or scene_prompt")
+    shot = get_shot(shot_id)
+    if not shot:
+        raise LookupError("Shot not found")
+    if field in (shot.get("locked_fields") or []):
+        raise PermissionError(f"{field} is locked. Unlock it in the editor to compile into it.")
+    config = load_config()
+    api_key = (config.get("openai_api_key") or "").strip()
+    if not api_key:
+        raise ValueError("No OpenAI API key is set. Add one in Settings.")
+    project = get_project(shot["project_id"])
+    context, slots = build_shot_compile_context(shot, project or {"id": shot["project_id"], "name": "", "settings": {}})
+    instructions = str(config.get("agent_instructions") or "").strip()
+    system_prompt = "\n\n".join(part for part in (instructions, COMPILER_RULES, "=== SHOT CONTEXT ===\n" + context) if part)
+    user_prompt = f"{COMPILE_FIELDS[field]} Shot: {shot['slug']}."
+    result = call_openai_chat(api_key, config.get("openai_model") or "gpt-4o-mini",
+                              [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "OpenAI call failed")
+    return {"field": field, "proposal": result["text"], "usage": result.get("usage") or {}, "context": context,
+            "slots": slots, "system_tokens": estimate_tokens(system_prompt), "current": shot.get(field) or ""}
 
 
 def previous_shot(shot: dict) -> dict | None:
@@ -10246,6 +10438,35 @@ def api_shot_render(shot_id):
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     return jsonify({"ok": True, **result}), 202
+
+
+@app.route("/api/shots/<int:shot_id>/compile", methods=["POST"])
+@login_required
+def api_shot_compile(shot_id):
+    """Proposal only. The editor writes the field when the user accepts."""
+    body = request.get_json(silent=True) or {}
+    try:
+        result = compile_shot_prompt(shot_id, str(body.get("field") or "prompt"))
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"ok": False, "error": str(exc), "locked": True}), 409
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/shots/<int:shot_id>/compile-context", methods=["GET"])
+@login_required
+def api_shot_compile_context(shot_id):
+    shot = get_shot(shot_id)
+    if not shot:
+        return jsonify({"ok": False, "error": "Shot not found"}), 404
+    project = get_project(shot["project_id"])
+    context, slots = build_shot_compile_context(shot, project or {"id": shot["project_id"], "name": "", "settings": {}})
+    return jsonify({"ok": True, "context": context, "slots": slots, "tokens": estimate_tokens(context), "rules": COMPILER_RULES})
 
 
 @app.route("/api/shots/<int:shot_id>/render-preview", methods=["POST"])
