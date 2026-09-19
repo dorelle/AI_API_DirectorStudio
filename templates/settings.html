@@ -430,6 +430,18 @@
   </section>
 
   <!-- PRICING INFO -->
+  <section class="settings-card" id="diskCard">
+    <h2>Disk and temp</h2>
+    <p class="settings-desc">What the asset library takes on disk, what app-created temp directories are lying around, and what is free on the drive the app runs from. Cleaning removes only directories the app itself created; nothing under Image_assets, config.json, studio.db or the project folder can be touched.</p>
+    <div id="diskReport" class="disk-report">Measuring\u2026</div>
+    <div class="key-row" style="margin-top:10px">
+      <button class="btn-verify" id="diskRefreshBtn" onclick="loadDiskReport()"><span>Refresh</span></button>
+      <button class="btn-save" id="diskCleanBtn" onclick="startCleanTemp()" style="display:none">Clean temp files</button>
+      <div id="diskStatus" class="key-status" style="margin:0"></div>
+    </div>
+    <div id="diskConfirm" class="disk-confirm" style="display:none"></div>
+  </section>
+
   <section class="settings-card">
     <h2>Estimated Pricing (March 2026)</h2>
 
@@ -805,6 +817,68 @@ function showLumaKeyStatus(msg, type) {
   el.className = "key-status " + type;
   el.style.display = "block";
 }
+
+// ---- Disk and temp (Task 14b) ----
+let diskReportData = null;
+function fmtBytes(n) {
+  n = Number(n || 0);
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + " KB";
+  return n + " B";
+}
+async function loadDiskReport() {
+  const host = document.getElementById("diskReport");
+  host.textContent = "Measuring\u2026";
+  document.getElementById("diskConfirm").style.display = "none";
+  try {
+    const r = await fetch("/api/system/disk");
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "Could not read disk");
+    diskReportData = d;
+    const rows = Object.entries(d.assets).map(([k, v]) => `<tr><td>${k}</td><td>${fmtBytes(v)}</td></tr>`).join("");
+    const temp = d.temp_dirs.length
+      ? `<ul class="disk-temp-list">${d.temp_dirs.map(t => `<li><code>${t.path}</code> \u2014 ${fmtBytes(t.bytes)} <span class="disk-why">(${t.why})</span></li>`).join("")}</ul>`
+      : `<p class="disk-none">No app-created temp directories found in <code>${d.temp_root}</code>.</p>`;
+    host.innerHTML = `
+      <table class="price-table disk-table">
+        <thead><tr><th>Image_assets</th><th>${fmtBytes(d.image_assets_bytes)}</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="disk-line"><strong>Free on ${d.drive}</strong> ${fmtBytes(d.free_bytes)} of ${fmtBytes(d.total_bytes)}</div>
+      <div class="disk-line"><strong>App temp directories</strong> ${d.temp_dirs.length} \u00b7 ${fmtBytes(d.temp_bytes)}</div>
+      ${temp}`;
+    document.getElementById("diskCleanBtn").style.display = d.temp_dirs.length ? "" : "none";
+  } catch (e) {
+    host.textContent = "Error: " + e.message;
+  }
+}
+function startCleanTemp() {
+  if (!diskReportData || !diskReportData.temp_dirs.length) return;
+  const box = document.getElementById("diskConfirm");
+  box.style.display = "";
+  box.innerHTML = `
+    <div class="disk-confirm-title">This will permanently remove ${diskReportData.temp_dirs.length} director${diskReportData.temp_dirs.length === 1 ? "y" : "ies"} (${fmtBytes(diskReportData.temp_bytes)}):</div>
+    <ul class="disk-temp-list">${diskReportData.temp_dirs.map(t => `<li><code>${t.path}</code> \u2014 ${fmtBytes(t.bytes)}</li>`).join("")}</ul>
+    <div class="key-row"><button class="btn-save" onclick="confirmCleanTemp()">Yes, remove these</button><button class="btn-verify" onclick="document.getElementById('diskConfirm').style.display='none'"><span>Cancel</span></button></div>`;
+}
+async function confirmCleanTemp() {
+  const el = document.getElementById("diskStatus");
+  const paths = diskReportData.temp_dirs.map(t => t.path);
+  document.getElementById("diskConfirm").style.display = "none";
+  try {
+    const r = await fetch("/api/system/clean-temp", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ confirm: true, paths }) });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "Clean failed");
+    const skipped = d.skipped.length ? ` Skipped ${d.skipped.length}: ${d.skipped.map(s => s.path + " (" + s.why + ")").join("; ")}` : "";
+    el.textContent = `Removed ${d.removed.length} director${d.removed.length === 1 ? "y" : "ies"}, freed ${fmtBytes(d.freed_bytes)}.${skipped}`;
+    el.className = "key-status success"; el.style.display = "block";
+  } catch (e) {
+    el.textContent = "Error: " + e.message; el.className = "key-status error"; el.style.display = "block";
+  }
+  loadDiskReport();
+}
+document.addEventListener("DOMContentLoaded", loadDiskReport);
 
 function toggleOpenaiKeyVisibility() {
   const inp = document.getElementById("openaiApiKeyInput");

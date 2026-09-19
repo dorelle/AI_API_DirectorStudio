@@ -104,6 +104,11 @@ REFERENCE_ARCHIVE_DIR = os.path.join(IMAGE_ASSETS_DIR, "reference_archive")
 REFERENCE_ARCHIVE_INDEX_FILE = os.path.join(REFERENCE_ARCHIVE_DIR, "_index.json")
 REFERENCE_MASKS_DIR = os.path.join(IMAGE_ASSETS_DIR, "reference_masks")
 REFERENCE_RENDERS_DIR = os.path.join(IMAGE_ASSETS_DIR, "reference_renders")
+# Task 14b: every temp directory the app (or its test harness) creates uses this prefix AND
+# carries this marker file. The cleaner removes nothing that lacks either.
+APP_TEMP_PREFIX = "dstudio_tmp_"
+APP_TEMP_MARKER = ".dstudio_temp"
+LEGACY_HARNESS_TEMP_RE = re.compile(r"^aiapi_t\d\d[a-z]?_[A-Za-z0-9_]+$")   # the Task 02-14 harness's own naming
 ASSET_UNCATEGORIZED_VALUE = "uncategorized"
 ASSET_UNCATEGORIZED_FOLDER = "uncategorized"
 ASSET_META_FIELDS = ("assetClient", "assetProject", "assetShot", "assetFilename")
@@ -3548,6 +3553,105 @@ def delete_style(style_id) -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Disk and temp (Task 14b). Read-only sizes, and a cleaner scoped to app-created temp dirs.
+# ---------------------------------------------------------------------------
+def make_app_temp_dir(label: str = "") -> str:
+    """The only sanctioned way to create a temp directory: prefixed and marked so the cleaner can find it."""
+    path = tempfile.mkdtemp(prefix=APP_TEMP_PREFIX + (f"{label}_" if label else ""))
+    with open(os.path.join(path, APP_TEMP_MARKER), "w", encoding="utf-8") as fh:
+        fh.write(utc_now_iso())
+    return path
+
+
+def dir_size_bytes(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def _protected_roots() -> list[str]:
+    return [os.path.realpath(BASE_DIR), os.path.realpath(IMAGE_ASSETS_DIR), os.path.realpath(CONFIG_FILE), os.path.realpath(STUDIO_DB_FILE)]
+
+
+def is_app_temp_dir(path: str) -> tuple[bool, str]:
+    """(is_ours, why). Ours = directly inside the system temp dir, named with our prefix AND holding
+    the marker file, or named exactly like the legacy harness copies. Never anything under the app."""
+    real = os.path.realpath(path)
+    if not os.path.isdir(real):
+        return False, "not a directory"
+    for root in _protected_roots():
+        if real == root or real.startswith(root + os.sep):
+            return False, "inside the app folder"
+    if os.path.dirname(real) != os.path.realpath(tempfile.gettempdir()):
+        return False, "not directly inside the temp directory"
+    name = os.path.basename(real)
+    if name.startswith(APP_TEMP_PREFIX) and os.path.isfile(os.path.join(real, APP_TEMP_MARKER)):
+        return True, "app prefix + marker"
+    if LEGACY_HARNESS_TEMP_RE.match(name) and os.path.isfile(os.path.join(real, "nbs.py")):
+        return True, "legacy test-harness copy"
+    return False, "not app-created"
+
+
+def scan_app_temp_dirs() -> list[dict]:
+    temp_root = tempfile.gettempdir()
+    found = []
+    try:
+        names = sorted(os.listdir(temp_root))
+    except OSError:
+        return found
+    for name in names:
+        path = os.path.join(temp_root, name)
+        ours, why = is_app_temp_dir(path)
+        if ours:
+            found.append({"path": path, "bytes": dir_size_bytes(path), "why": why})
+    return found
+
+
+def disk_report() -> dict:
+    assets = {}
+    for label, path in (("generations", GENERATIONS_DIR), ("videos", VIDEOS_DIR), ("loved", LOVED_DIR),
+                        ("reference_archive", REFERENCE_ARCHIVE_DIR), ("reference_masks", REFERENCE_MASKS_DIR),
+                        ("reference_renders", REFERENCE_RENDERS_DIR), ("edit_sessions", EDIT_SESSIONS_DIR)):
+        assets[label] = dir_size_bytes(path) if os.path.isdir(path) else 0
+    usage = shutil.disk_usage(BASE_DIR)
+    temp_dirs = scan_app_temp_dirs()
+    return {
+        "image_assets_bytes": dir_size_bytes(IMAGE_ASSETS_DIR) if os.path.isdir(IMAGE_ASSETS_DIR) else 0,
+        "assets": assets,
+        "temp_dirs": temp_dirs,
+        "temp_bytes": sum(item["bytes"] for item in temp_dirs),
+        "temp_root": tempfile.gettempdir(),
+        "drive": os.path.splitdrive(os.path.realpath(BASE_DIR))[0] or os.path.realpath(BASE_DIR),
+        "free_bytes": usage.free,
+        "total_bytes": usage.total,
+    }
+
+
+def clean_app_temp_dirs(requested_paths: list[str]) -> dict:
+    """Removes only paths that pass is_app_temp_dir at the moment of deletion."""
+    removed, skipped, freed = [], [], 0
+    for raw in requested_paths:
+        path = os.path.realpath(str(raw or ""))
+        ours, why = is_app_temp_dir(path)
+        if not ours:
+            skipped.append({"path": path, "why": why})
+            continue
+        size = dir_size_bytes(path)
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            skipped.append({"path": path, "why": "could not remove (in use?)"})
+            continue
+        removed.append({"path": path, "bytes": size})
+        freed += size
+    return {"removed": removed, "skipped": skipped, "freed_bytes": freed}
 
 
 # ---------------------------------------------------------------------------
@@ -9784,6 +9888,24 @@ def api_scenes_update(scene_id):
 # ---------------------------------------------------------------------------
 # API - Workbench agent (Director Studio). Read-only over the project.
 # ---------------------------------------------------------------------------
+@app.route("/api/system/disk")
+@login_required
+def api_system_disk():
+    return jsonify({"ok": True, **disk_report()})
+
+
+@app.route("/api/system/clean-temp", methods=["POST"])
+@login_required
+def api_system_clean_temp():
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirm"):
+        return jsonify({"ok": False, "error": "Confirmation required"}), 400
+    paths = body.get("paths") if isinstance(body.get("paths"), list) else []
+    if not paths:
+        return jsonify({"ok": False, "error": "Nothing selected to clean"}), 400
+    return jsonify({"ok": True, **clean_app_temp_dirs(paths)})
+
+
 @app.route("/api/agent/status")
 @login_required
 def api_agent_status():

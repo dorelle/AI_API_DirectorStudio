@@ -10074,3 +10074,14 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 
 .agent-instructions { width: 100%; min-height: 200px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); color: var(--text); font-size: 13px; line-height: 1.5; padding: 10px 12px; resize: vertical; font-family: inherit; }
 .agent-instructions:focus { outline: none; border-color: var(--accent); }
+
+/* ---- Task 14b: disk and temp card ---- */
+.disk-report { font-size: 13px; color: var(--text); display: grid; gap: 8px; }
+.disk-table { max-width: 420px; }
+.disk-line strong { color: var(--text-dim); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; margin-right: 8px; }
+.disk-temp-list { margin: 0; padding-left: 18px; font-size: 12px; display: grid; gap: 4px; }
+.disk-temp-list code { font-size: 11px; }
+.disk-why { color: var(--text-muted); }
+.disk-none { font-size: 12px; color: var(--text-dim); margin: 0; }
+.disk-confirm { margin-top: 12px; border: 1px solid rgba(255, 79, 79, 0.5); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+.disk-confirm-title { font-weight: 700; color: var(--red); font-size: 13px; }
