@@ -8574,6 +8574,14 @@ def collect_asset_metadata_options() -> dict:
     return options
 
 
+@app.after_request
+def no_store_html(response):
+    # Pages carry the script cache-busters; a cached page would keep loading an old script.
+    if (response.mimetype or "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.context_processor
 def inject_asset_metadata_bootstrap():
     try:

@@ -13,20 +13,17 @@
   const asEntry = (entry) => ({ ref: refOf(entry), role: roleOf(entry) });
   const STATUS_LABELS = { empty: "Empty", queued: "Queued", rendering: "Rendering", done: "Done", rejected: "Rejected", failed: "Failed" };
   const FIELD_GROUPS = [
-    { key: "timing", label: "Timing", fields: [
+    // Working order (Task 09): numbered steps 1-7. Timing and Notes carry no number.
+    { key: "timing", label: "Timing", hint: "Duration and where it lands in the beat map.", fields: [
       { key: "duration_seconds", label: "Duration (seconds)", type: "number" },
       { key: "beat_marker", label: "Beat marker" },
     ] },
-    { key: "content", label: "Content", fields: [
+    { key: "content", label: "Content", step: 1, hint: "What happens in the shot \u2014 action, dialogue, sound.", fields: [
       { key: "action_text", label: "Action", type: "textarea" },
       { key: "dialogue", label: "Dialogue / VO", type: "textarea" },
       { key: "audio_cue", label: "Audio cue" },
     ] },
-    { key: "prompt", label: "Prompt", fields: [
-      { key: "prompt", label: "Prompt", type: "textarea", rows: 4, wide: true },
-      { key: "negative_prompt", label: "Negative prompt", type: "textarea", wide: true },
-    ] },
-    { key: "camera", label: "Camera", fields: [
+    { key: "camera", label: "Camera", step: 2, hint: "How it is shot \u2014 size, angle, movement, lens.", fields: [
       { key: "shot_size", label: "Shot size", list: ["Wide", "Medium", "Close"] },
       { key: "angle", label: "Angle", list: ["Eye level", "Low", "High", "Overhead"] },
       { key: "movement", label: "Movement (up to three, comma separated)", type: "movement" },
@@ -34,17 +31,21 @@
       { key: "aperture", label: "Aperture" },
       { key: "speed_ramp", label: "Speed ramp" },
     ] },
-    { key: "generation", label: "Generation", fields: [
+    // Ordered attachments: what the shot sends besides the prompt. Order = provider reference order.
+    { key: "elements", label: "Elements", step: 3, list: "elements", addLabel: "+ Add elements", empty: "No talent attached yet. Add who is in the shot." },
+    { key: "assets", label: "Assets", step: 4, list: "reference_assets", addLabel: "+ Add references", empty: "No references yet. Add plates, garments, props or style images." },
+    { key: "prompt", label: "Prompt", step: 5, hint: "The text the model receives.", fields: [
+      { key: "prompt", label: "Prompt", type: "textarea", rows: 4, wide: true },
+      { key: "negative_prompt", label: "Negative prompt", type: "textarea", wide: true },
+    ] },
+    { key: "generation", label: "Generation", step: 6, hint: "First frame, engine, and whether it continues from the previous shot.", fields: [
       { key: "first_frame", label: "First frame" },
       { key: "last_frame", label: "Last frame" },
       { key: "chain_from_previous", label: "Chain from previous shot's last frame", type: "checkbox" },
       { key: "engine", label: "Engine (video model)", type: "engine" },
     ] },
-    // Ordered attachments: what the shot sends besides the prompt. Order = provider reference order.
-    { key: "elements", label: "Elements", list: "elements", addLabel: "+ Add elements", empty: "No talent attached." },
-    { key: "assets", label: "Assets", list: "reference_assets", addLabel: "+ Add references", empty: "No reference images attached." },
-    { key: "takes", label: "Takes", takes: true },
-    { key: "notes", label: "Notes", fields: [
+    { key: "takes", label: "Takes", step: 7, takes: true },
+    { key: "notes", label: "Notes", hint: "Anything the crew should know.", fields: [
       { key: "status", label: "Status", type: "select", options: Object.keys(STATUS_LABELS) },
       { key: "note", label: "Note", type: "textarea" },
     ] },
@@ -353,9 +354,10 @@
       const frameActions = url
         ? `<button type="button" class="ds-card-btn" data-card-action="pick">Replace</button><button type="button" class="ds-card-btn" data-card-action="clear">Clear</button>`
         : `<button type="button" class="ds-card-btn" data-card-action="pick">Pick frame</button>`;
+      const ready = renderReadiness(shot);
       const renderAction = rendering
         ? ""
-        : `<button type="button" class="ds-card-btn ds-card-btn-render" data-card-action="render" title="Render this shot">\u25B6 Render</button>`;
+        : `<button type="button" class="ds-card-btn ds-card-btn-render" data-card-action="render" ${ready.ok ? "" : "disabled"} title="${esc(ready.ok ? "Render this shot" : ready.reasons.join(" \u00b7 "))}">\u25B6 Render</button>`;
       return `
       <div class="ds-card${selected ? " is-selected" : ""}${hasVisual ? "" : " ds-card-empty"}${visual.approved ? " is-approved" : ""}${rendering ? " is-rendering" : ""}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}${visual.approved ? " \u00b7 approved" : ""}">
         <div class="ds-card-frame">
@@ -513,7 +515,103 @@
   }
   function isSectionOpen(key) {
     const state = sectionState();
-    return key in state ? Boolean(state[key]) : true;
+    if (key in state) return Boolean(state[key]);
+    return key !== "guide"; // sections open by default; the guide strip starts collapsed
+  }
+
+  // ---- guidance: section state, readiness, guide strip -----------------------
+  const GUIDE_STEPS = [
+    ["Content", "Write what happens: the action, any dialogue, the sound."],
+    ["Camera", "Say how it is shot: size, angle, movement, lens."],
+    ["Elements", "Attach the talent in the shot and give each one a role."],
+    ["Assets", "Attach anything else it references: plates, garments, props, style."],
+    ["Prompt", "Write the text the model receives."],
+    ["Generation", "Pick a first frame, choose the engine, and chain from the previous shot if it continues it."],
+    ["Takes", "Render, compare the takes, approve the keeper."],
+  ];
+
+  function hasText(value) { return String(value ?? "").trim() !== ""; }
+
+  function sectionHasContent(shot, group) {
+    if (group.list) return (shot[group.list] || []).length > 0;
+    if (group.takes) return Boolean(shot.takes && shot.takes.count);
+    return (group.fields || []).some((field) => {
+      const value = shot[field.key];
+      if (field.type === "checkbox") return Boolean(value);
+      if (field.key === "status") return false; // a default status is not "content"
+      if (Array.isArray(value)) return value.length > 0;
+      return hasText(value);
+    });
+  }
+
+  function sectionStateMarkup(shot, group) {
+    if (group.list) return `<span class="ds-section-count">${(shot[group.list] || []).length}</span>`;
+    if (group.takes) return `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>`;
+    return sectionHasContent(shot, group) ? `<span class="ds-section-check" title="Has content">\u2713</span>` : "";
+  }
+
+  function engineResolved(shot) {
+    const engine = String(shot.engine || "").trim();
+    if (engine && videoModels && videoModels[engine]) return true;
+    if (engine && !videoModels) return true; // catalog not loaded yet; the server checks
+    if (typeof window.getCurrentVideoSelection === "function") {
+      try { return Boolean(window.getCurrentVideoSelection().modelId); } catch (e) { return false; }
+    }
+    return false;
+  }
+
+  // Mirrors the server's checks in build_shot_render_payload so the reason shows before the click.
+  function renderReadiness(shot) {
+    const reasons = [];
+    if (shot.takes && shot.takes.rendering) return { ok: false, rendering: true, reasons: ["Rendering\u2026"] };
+    if (!hasText(shot.prompt)) reasons.push("Needs a prompt");
+    if (!engineResolved(shot)) reasons.push("No engine selected");
+    if (shot.chain_from_previous) {
+      const index = shots.findIndex((item) => item.id === shot.id);
+      const prev = index > 0 ? shots[index - 1] : null;
+      if (!prev) reasons.push("Chain is on, but this is the first shot");
+      else if (!(prev.takes && prev.takes.approved && prev.takes.approved.asset_path)) reasons.push(`Chain is on, but ${prev.slug} has no approved take`);
+    }
+    return { ok: reasons.length === 0, rendering: false, reasons };
+  }
+
+  function readinessMarkup(shot) {
+    const ready = renderReadiness(shot);
+    const title = ready.ok ? "Render this shot" : ready.reasons.join(" \u00b7 ");
+    const button = `<button type="button" class="history-filter-toggle ds-render-btn" id="dsRenderBtn" ${ready.ok ? "" : "disabled"} title="${esc(title)}">${ready.rendering ? "Rendering\u2026" : "\u25B6 Render shot"}</button>`;
+    const hint = (ready.ok || ready.rendering) ? "" : `<span class="ds-ready-hint" id="dsReadyHint">${ready.reasons.map(esc).join(" \u00b7 ")}</span>`;
+    return `<span class="ds-ready">${hint}${button}</span>`;
+  }
+
+  // After a field save: refresh readiness + section state in place (the editor is not rebuilt, to keep focus).
+  function refreshEditorState(shot) {
+    const host = $("dsShotEditor");
+    if (!host || findShot(selectedId) !== shot) return;
+    const ready = host.querySelector(".ds-ready");
+    if (ready) {
+      ready.outerHTML = readinessMarkup(shot);
+      $("dsRenderBtn")?.addEventListener("click", () => renderShot(shot.id));
+    }
+    FIELD_GROUPS.forEach((group) => {
+      const details = host.querySelector(`details.ds-section[data-section="${group.key}"]`);
+      if (!details) return;
+      const filled = sectionHasContent(shot, group);
+      details.classList.toggle("has-content", filled);
+      details.classList.toggle("is-empty", !filled);
+      const summary = details.querySelector("summary");
+      if (summary) summary.innerHTML = `${group.step ? `<span class="ds-step">${group.step}</span>` : ""}${esc(group.label)}${sectionStateMarkup(shot, group)}`;
+      const hint = details.querySelector(".ds-section-hint");
+      if (hint && filled) hint.remove();
+      if (!hint && !filled && !group.list && !group.takes && group.hint) summary?.insertAdjacentHTML("afterend", `<div class="ds-section-hint">${esc(group.hint)}</div>`);
+    });
+  }
+
+  function guideMarkup() {
+    return `<details class="ds-guide" data-section="guide" ${isSectionOpen("guide") ? "open" : ""}>
+      <summary>How a shot comes together</summary>
+      <ol class="ds-guide-steps">${GUIDE_STEPS.map(([name, text]) => `<li><strong>${esc(name)}</strong> \u2014 ${esc(text)}</li>`).join("")}</ol>
+      <div class="ds-guide-note">This is the working order, not a rule. Timing and Notes can be filled at any point.</div>
+    </details>`;
   }
   function setSectionOpen(key, open) {
     const state = sectionState();
@@ -578,11 +676,16 @@
       return;
     }
     const sceneLocked = Array.isArray(shot.locked_fields) && shot.locked_fields.includes("scene");
-    const sections = FIELD_GROUPS.map((group) => `
-      <details class="ds-section${group.list ? " ds-section-list" : ""}" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
-        <summary>${esc(group.label)}${group.list ? `<span class="ds-section-count">${(shot[group.list] || []).length}</span>` : ""}${group.takes ? `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>` : ""}</summary>
+    const sections = FIELD_GROUPS.map((group) => {
+      const filled = sectionHasContent(shot, group);
+      const hint = (!group.list && !group.takes && !filled && group.hint) ? `<div class="ds-section-hint">${esc(group.hint)}</div>` : "";
+      return `
+      <details class="ds-section${group.list ? " ds-section-list" : ""}${filled ? " has-content" : " is-empty"}" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
+        <summary>${group.step ? `<span class="ds-step">${group.step}</span>` : ""}${esc(group.label)}${sectionStateMarkup(shot, group)}</summary>
+        ${hint}
         ${group.list ? renderAttachmentList(shot, group) : (group.takes ? renderTakesSection(shot) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`)}
-      </details>`).join("");
+      </details>`;
+    }).join("");
     host.innerHTML = `
       <div class="ds-editor-head">
         <span class="ds-shot-status ds-shot-status-lg" data-status="${esc(shot.status)}"></span>
@@ -593,10 +696,11 @@
         </div>
         <span class="ds-editor-order">#${shots.findIndex((item) => item.id === shot.id) + 1} of ${shots.length}</span>
         <span class="ds-editor-saved" id="dsEditorSaved"></span>
-        <button type="button" class="history-filter-toggle ds-render-btn" id="dsRenderBtn" ${(shot.takes && shot.takes.rendering) ? "disabled" : ""}>${(shot.takes && shot.takes.rendering) ? "Rendering\u2026" : "\u25B6 Render shot"}</button>
+        ${readinessMarkup(shot)}
       </div>
+      ${guideMarkup()}
       <div class="ds-sections">${sections}</div>`;
-    host.querySelectorAll("details.ds-section").forEach((details) => {
+    host.querySelectorAll("details.ds-section, details.ds-guide").forEach((details) => {
       details.addEventListener("toggle", () => setSectionOpen(details.dataset.section, details.open));
     });
     host.querySelectorAll("[data-field]").forEach((input) => {
@@ -1041,6 +1145,7 @@
       if (fieldKey === "status") {
         document.querySelectorAll(".ds-editor-head .ds-shot-status").forEach((dot) => dot.setAttribute("data-status", payload.shot.status));
       }
+      refreshEditorState(payload.shot);
       flashSaved("Saved");
     } catch (error) {
       setStatusLine(error.message || "Could not save.", "error");
