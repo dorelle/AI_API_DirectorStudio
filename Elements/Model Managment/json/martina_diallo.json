@@ -1,0 +1,48 @@
+{
+  "id": "martina_diallo",
+  "name": "Martina Diallo",
+  "gender": "female",
+  "ethnicity": "african",
+  "age_group": "adult",
+  "skin_tone": "deep_brown",
+  "hair_color": "black",
+  "hair_style": "afro",
+  "eye_color": "dark_brown",
+  "body_type": "slender",
+  "description": "Symmetrical face with high cheekbones, strong jawline, and smooth deep brown skin. Neutral, intense expression featuring dark brown eyes and a full afro.",
+  "tags": [
+    "headshot",
+    "minimalist",
+    "natural-hair",
+    "portrait",
+    "serene"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "martina_diallo_001.jpg",
+      "path": "martina_diallo_001.jpg",
+      "added_at": "2026-09-19T18:18:38.164972",
+      "is_primary": true,
+      "analyzed": true
+    },
+    {
+      "filename": "martina_diallo_002.jpg",
+      "path": "martina_diallo_002.jpg",
+      "added_at": "2026-09-19T18:55:57.016760",
+      "is_primary": false,
+      "analyzed": true
+    },
+    {
+      "filename": "martina_diallo_003.jpg",
+      "path": "martina_diallo_003.jpg",
+      "added_at": "2026-09-19T19:10:58.121952",
+      "is_primary": false,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-19T18:18:38.164972",
+  "updated_at": "2026-09-19T19:10:58.121952",
+  "type": "talent"
+}

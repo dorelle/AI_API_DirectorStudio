@@ -1,0 +1,34 @@
+{
+  "id": "futuristic_command_boardroom",
+  "name": "Futuristic Command Boardroom",
+  "location_type": "office",
+  "interior_exterior": "interior",
+  "time_of_day": "afternoon",
+  "materials": "brushed metal, glass, leather, polished stone",
+  "light_behavior": "practical_lit",
+  "palette": "warm",
+  "period": "futuristic",
+  "condition": "pristine",
+  "description": "A high-tech boardroom features a long metallic table under a large suspended holographic display. Warm strip lighting accents brushed metal walls and windows overlooking a hazy cityscape.",
+  "tags": [
+    "sci-fi",
+    "corporate",
+    "high-tech",
+    "boardroom",
+    "holographic"
+  ],
+  "profile": {},
+  "is_favorite": false,
+  "images": [
+    {
+      "filename": "futuristic_command_boardroom_001.jpg",
+      "path": "futuristic_command_boardroom_001.jpg",
+      "added_at": "2026-09-19T18:49:34.952167",
+      "is_primary": true,
+      "analyzed": true
+    }
+  ],
+  "created_at": "2026-09-19T18:49:34.952167",
+  "updated_at": "2026-09-19T18:49:34.952167",
+  "type": "environment"
+}
