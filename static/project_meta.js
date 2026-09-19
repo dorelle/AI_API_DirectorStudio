@@ -482,6 +482,8 @@
     const type = document.getElementById("projectModalType")?.value || "campaign";
     const film = document.getElementById("projectModalFilmFields");
     if (film) film.style.display = type === "film" ? "" : "none";
+    const codeField = document.getElementById("projectModalFilmCodeField");
+    if (codeField) codeField.style.display = type === "film" ? "" : "none";
   }
 
   const FILM_SETTING_INPUTS = {
