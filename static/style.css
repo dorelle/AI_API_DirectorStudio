@@ -9641,3 +9641,85 @@ body.video-prompt-resizing .video-prompt-resizer::after,
   text-transform: uppercase;
   color: var(--text-muted);
 }
+
+/* ---- Director Studio: prompt + attachments in the shot editor (Task 05) ---- */
+.ds-field-wide { grid-column: 1 / -1; }
+.ds-section-count {
+  margin-left: 6px;
+  color: var(--accent-text);
+}
+.ds-attachments { display: grid; gap: 8px; }
+.ds-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 24px;
+}
+.ds-chip-empty { font-size: 12px; color: var(--text-dim); padding: 4px 0; }
+.ds-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  background: var(--surface);
+  cursor: grab;
+  user-select: none;
+  max-width: 220px;
+}
+.ds-chip.is-dragging { opacity: 0.4; }
+.ds-chip.is-missing { border-style: dashed; }
+.ds-chip.drop-before::before,
+.ds-chip.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.ds-chip.drop-before::before { left: -6px; }
+.ds-chip.drop-after::after { right: -6px; }
+.ds-chip img,
+.ds-chip-noimg {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface3);
+  display: block;
+  flex-shrink: 0;
+}
+.ds-chip-pos {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-dim);
+  min-width: 14px;
+  text-align: center;
+}
+.ds-chip-label {
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ds-chip-remove {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.ds-chip-remove:hover { color: var(--red); }
+.ds-attach-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ds-attach-hint { font-size: 10px; color: var(--text-muted); }

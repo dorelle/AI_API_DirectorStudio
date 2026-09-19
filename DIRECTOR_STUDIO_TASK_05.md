@@ -1,14 +1,18 @@
-# Director Studio — Task 05: The Shot Strip
+# Director Studio — Task 05: What The Shot Sends
 
 Repo: `dorelle/AI_API_DirectorStudio`
 Read `DIRECTOR_STUDIO_ORIENTATION.md` and the Task 04 commit (`6f85193`) before starting.
 
-Task 04 built the shot list and editor. In Shot mode the center area still shows a single
-asset in the viewer, which is the wrong thing to look at while building a sequence.
+Task 04 built the shot row, the list and the editor. The row describes what a shot **is** —
+timing, content, camera, first and last frame — but carries nothing about what actually
+gets sent to a model. No prompt, no references, no elements.
 
-This task turns the center area into the sequence.
+So a shot row currently cannot produce anything, however well described it is.
 
-**It does not render anything.** Rendering, takes and approval are Task 06.
+This task adds those three. **It does not render.** Rendering is a later task, and it has
+nothing to send until this exists.
+
+The shot strip in the center area is deferred to Task 06.
 
 ---
 
@@ -16,112 +20,121 @@ This task turns the center area into the sequence.
 
 In:
 
-- A horizontal shot strip in the center area, active only in Shot mode
-- Cards showing a frame where one is set, text where one is not
-- A frame picker on the card
-- Drag to reorder along the strip
+- Prompt on the shot row
+- Elements attached to the shot
+- Assets, meaning reference images, attached to the shot
+- A section in the shot editor for each
 
 Out, and not to be started:
 
-- Rendering, takes, approval, cost
-- The board as an unordered thinking canvas — this is the ordered strip, not that
-- Script-to-shots, the preset compiler, export
+- Rendering, takes, approval
+- The shot strip in the center area
+- The preset compiler, or generating the prompt from the camera fields
+- Handle resolution by shot size, comp card views, lineage
 
 ---
 
-## 1. The strip
+## 1. Prompt
 
-When the Shot pill is active, the center area shows the shot strip instead of the single
-asset viewer.
+New columns on `shots`:
 
-- Horizontal, left to right, in `sort_order`. It reads as a sequence
-- Scrolls horizontally when it overflows
-- Every other mode — Image, Video, Edit, Upscale — keeps the existing viewer, unchanged
-- Leaving Shot mode restores the viewer as it was
-
-The strip and the right-panel list are two views of one order. Reordering in either
-updates the other live. **This is not a second ordering.**
-
-## 2. The card
-
-Three states, same card:
-
-| State | Shows |
+| Column | Notes |
 | --- | --- |
-| Frame set | The image, with slug and scene over or under it |
-| No frame | Slug and scene as text, on a placeholder |
-| Selected | Same content, visibly selected |
+| `prompt` | The text sent to the model |
+| `negative_prompt` | |
 
-Also on every card:
+Free text for both, in their own section of the shot editor. Same lock behavior as every
+other field from Task 04.
 
-- The status indicator, consistent with the left-edge bar used in the right-panel list
-- Position in the sequence
+**A note on where this is going, so the field is not built the wrong shape.** A later task
+adds a compiler that writes this field from the camera and content fields rather than the
+user typing it. When that lands, the existing field-lock mechanism is what protects a hand
+written prompt from being overwritten. So build it as an ordinary editable field now. Do
+not add any compile affordance, and do not make it read-only.
 
-Clicking a card selects that shot. The editor in the bottom panel fills with it, and the
-right-panel list selection follows. One selection, three surfaces.
+## 2. Elements
 
-Cards are a fixed size so the strip reads evenly. Portrait and landscape frames both have
-to sit in that box without distorting — fit, do not stretch.
+Elements are the app's talent records. A shot needs to say which ones are in it.
 
-## 3. The frame picker
+New column on `shots`:
 
-**On the card, not in the editor.** The card is where the eye already is.
+| Column | Notes |
+| --- | --- |
+| `elements` | JSON array of element ids, **ordered** |
 
-- An empty card offers a pick action
-- A card with a frame offers replace and clear
-- Picking writes to the shot's `first_frame`
-- The editor's First Frame field stays, shows the same value, and stays in sync
+Order matters. Providers number references positionally, so the array order is the
+reference order, and it has to be stable and user-controllable.
 
-Use the existing reference-picker modal rather than building a new one. The orientation
-report found a "Choose reference images" modal with Loved and References tabs — reuse it,
-in single-select mode.
+In the editor:
 
-If dragging an image from the gallery onto a card is straightforward given how the page is
-already wired, add it. If it is not, skip it and say so.
+- An Elements section showing the attached elements as thumbnails with names
+- An add action opening the **existing** Elements modal. Do not build a new picker
+- Remove, and reorder by drag
+- The orientation report found an `@mention` mechanism already in the codebase. If
+  attaching an element can reuse it rather than duplicating the concept, do that and say
+  so. If it is unrelated, leave it alone and say so
 
-## 4. Reorder on the strip
+## 3. Assets
 
-Drag a card along the strip to reorder.
+Reference images that are not talent — a plate, a garment, a piece of set.
 
-- Uses the same `POST /api/shots/reorder` route from Task 04
-- **Never touches `slug`.** Same rule as before, verify it again
-- The chain-clearing rule from Task 04 applies identically here: clear
-  `chain_from_previous` on the moved row and on the row that gains a new predecessor
-- The right-panel list updates without a reload
+New column on `shots`:
 
-Insert and delete stay in the right-panel list for now. Do not duplicate them on the card
-unless it falls out of the work for free.
+| Column | Notes |
+| --- | --- |
+| `reference_assets` | JSON array of asset paths or ids, **ordered** |
+
+In the editor:
+
+- An Assets section showing attached references as thumbnails
+- An add action opening the **existing** reference picker modal, the one with Loved and
+  References tabs
+- Remove, and reorder by drag
+
+## 4. How the three sections sit
+
+The editor already has Timing, Content, Camera, Generation and Notes as collapsible
+sections. Add the new ones in an order that reads sensibly alongside them — the intent is
+Assets and Elements near Generation, with Prompt beside Content.
+
+Use your judgment on placement, keep every section collapsible, keep collapse state
+remembered as it already is.
+
+**First frame and last frame stay where they are.** They are generation inputs, not
+references, and they already work.
 
 ---
 
 ## Constraints
 
-- Additive. No renamed columns, no restructured tables, no removed routes.
-- Do not touch the Generator's own modes, the Elements modal's own behavior, the provider
-  layer, or the job layer.
-- Do not change the shots schema from Task 04. This task is UI over the existing row.
+- Additive. New columns only. No renamed columns, no restructured tables.
+- **Reuse the existing modals.** The Elements modal and the reference picker both exist.
+  Do not build new ones, and do not change how they behave for their current callers.
+- Do not touch the Generator's own modes, the provider layer, or the job layer.
+- Do not change anything from Tasks 02, 03 or 04 beyond adding to the shot editor.
 - No new dependencies.
 - No refactoring of adjacent code. Match existing style.
 - Anything here contradicted by the code: stop and report.
 
 ## Done means
 
-1. Shot mode shows the strip. Every other mode shows the viewer, unchanged.
-2. Cards appear in `sort_order` and scroll horizontally.
-3. A shot with a first frame shows it. A shot without shows slug and scene as text.
-4. Picking a frame from a card saves it and the card updates.
-5. The editor's First Frame field and the card stay in sync in both directions.
-6. Clicking a card selects the shot in the editor and the right-panel list.
-7. Dragging a card reorders, and the right-panel list follows.
-8. **No slug changes on reorder.** Verify against the database again.
-9. Portrait and landscape frames both sit in the card without distortion.
-10. Campaign projects and no-project state are unchanged.
-11. Everything from Tasks 02, 03 and 04 still works.
+1. A shot has a prompt and a negative prompt, saved and reloaded correctly.
+2. Elements can be attached to a shot from the existing Elements modal.
+3. Attached elements show as thumbnails, can be removed, and can be reordered.
+4. Reference assets can be attached from the existing reference picker.
+5. Attached references show as thumbnails, can be removed, and can be reordered.
+6. **Order survives a reload** for both arrays. Verify against the database.
+7. The lock mechanism works on the prompt fields.
+8. The existing Elements modal and reference picker still behave identically for their
+   current callers.
+9. Campaign projects and no-project state are unchanged.
+10. Everything from Tasks 02, 03 and 04 still works.
 
 ## Report back
 
 - Files changed, one line each.
-- Whether drag-from-gallery was feasible, and what was done.
-- Paste slug and sort_order before and after a strip reorder.
+- Whether the existing `@mention` mechanism was reusable for element attachment.
+- Paste the `elements` and `reference_assets` values for one shot before and after a
+  reorder, so ordering can be read directly.
 - Anything in this spec that was wrong once the code was read.
 - Anything deferred, and why.

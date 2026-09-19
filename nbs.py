@@ -2110,6 +2110,20 @@ def ensure_task_runs_columns(conn):
             conn.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {ddl}")
 
 
+def ensure_shots_columns(conn):
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(shots)").fetchall()}
+    desired = {
+        # Task 05: what the shot sends
+        "prompt":           "TEXT NOT NULL DEFAULT ''",
+        "negative_prompt":  "TEXT NOT NULL DEFAULT ''",
+        "elements":         "TEXT NOT NULL DEFAULT '[]'",
+        "reference_assets": "TEXT NOT NULL DEFAULT '[]'",
+    }
+    for name, ddl in desired.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE shots ADD COLUMN {name} {ddl}")
+
+
 def ensure_task_templates_columns(conn):
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_templates)").fetchall()}
     desired = {
@@ -2223,6 +2237,7 @@ def init_studio_db():
         )
         """
     )
+    ensure_shots_columns(conn)
     ensure_task_templates_columns(conn)
     now_ts = utc_now_iso()
     for template in DEFAULT_TASK_TEMPLATES + DEFAULT_FILM_TASK_TEMPLATES:
@@ -2413,14 +2428,17 @@ SHOT_TEXT_FIELDS = (
     "scene", "beat_marker", "action_text", "dialogue", "audio_cue",
     "shot_size", "angle", "lens", "aperture", "speed_ramp",
     "first_frame", "last_frame", "engine", "note",
+    "prompt", "negative_prompt",
 )
-SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields")
+# Ordered JSON arrays of ids/paths. Order is the reference order providers see.
+SHOT_LIST_FIELDS = ("elements", "reference_assets")
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields")
 SHOT_SORT_STEP = 10
 
 
 def shot_row_to_dict(row) -> dict:
     item = dict(row)
-    for key, fallback in (("movement", []), ("locked_fields", [])):
+    for key, fallback in (("movement", []), ("locked_fields", []), ("elements", []), ("reference_assets", [])):
         try:
             value = json.loads(item.get(key) or "[]")
         except json.JSONDecodeError:
@@ -2484,6 +2502,16 @@ def _normalize_shot_movement(raw) -> str:
     return json.dumps(cleaned[:3], ensure_ascii=False)
 
 
+def _normalize_shot_id_list(raw) -> str:
+    values = raw if isinstance(raw, list) else []
+    cleaned = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
 def _normalize_shot_locked_fields(raw) -> str:
     values = raw if isinstance(raw, list) else []
     cleaned = []
@@ -2510,6 +2538,9 @@ def _shot_updates_from_body(body: dict) -> dict:
                 raise ValueError("duration_seconds must be a number")
     if "movement" in body:
         updates["movement"] = _normalize_shot_movement(body.get("movement"))
+    for key in SHOT_LIST_FIELDS:
+        if key in body:
+            updates[key] = _normalize_shot_id_list(body.get(key))
     if "chain_from_previous" in body:
         updates["chain_from_previous"] = 1 if body.get("chain_from_previous") else 0
     if "status" in body:

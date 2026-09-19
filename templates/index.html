@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919a"></script>
-  <script defer src="/static/director_shots.js?v=20260919b"></script>
+  <script defer src="/static/director_shots.js?v=20260919c"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -7026,6 +7026,8 @@ async function loadLovedPickerSource(source = pickerSource) {
       list,
       (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame")
         ? 1
+        : pickerTarget === "shot-refs"
+        ? 99
         : (pickerTarget === "video-refs" ? getMaxVideoReferenceImages() : getMaxRefImages())
     );
   } catch(e) {
@@ -7044,6 +7046,7 @@ function syncLovedPickerTargetUi() {
   const isEditGlobalRefs = pickerTarget === "edit-global-refs";
   const isEditSelectionRefs = pickerTarget === "edit-selection-refs";
   const isShotFrame = pickerTarget === "shot-frame";
+  const isShotRefs = pickerTarget === "shot-refs";
   if (title) {
     title.textContent = isShotFrame ? "Choose first frame" : (isVideoEnd ? "Choose end frame" : (isVideoSource ? "Choose source image" : "Choose reference images"));
   }
@@ -7053,6 +7056,8 @@ function syncLovedPickerTargetUi() {
   if (limitNote) {
     if (isShotFrame) {
       limitNote.textContent = "Choose one image as this shot's first frame.";
+    } else if (isShotRefs) {
+      limitNote.textContent = "Reference images for this shot. Order can be changed in the shot editor.";
     } else if (isVideoEnd) {
       limitNote.textContent = videoEndImage && videoEndImage.data
         ? "Choose one image to replace the current end frame."
@@ -7081,6 +7086,7 @@ async function openLovedPicker(target = "refs") {
     target === "edit-global-refs" ? "edit-global-refs" :
     target === "edit-selection-refs" ? "edit-selection-refs" :
     target === "shot-frame" ? "shot-frame" :
+    target === "shot-refs" ? "shot-refs" :
     "refs";
   if (pickerTarget === "refs") {
     const maxRef = getMaxRefImages();
@@ -7108,6 +7114,8 @@ async function switchLovedPickerSource(source) {
 function togglePickerCard(card, url, filename, maxRef) {
   const remaining = (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame")
     ? 1
+    : pickerTarget === "shot-refs"
+    ? 99
     : (pickerTarget === "video-refs"
       ? maxRef - videoReferenceImages.length
       : ((pickerTarget === "edit-global-refs" || pickerTarget === "edit-selection-refs")
@@ -7141,6 +7149,14 @@ function updatePickerSelCount() {
 async function confirmLovedPicker() {
   const urls = Array.from(pickerSelected);
   const target = pickerTarget;
+  if (target === "shot-refs") {
+    const items = urls.map((url) => pickerItemsByUrl.get(url) || { url });
+    closeLovedPicker();
+    if (window.directorShots && typeof window.directorShots.onReferencesPicked === "function") {
+      window.directorShots.onReferencesPicked(urls, items);
+    }
+    return;
+  }
   if (target === "shot-frame") {
     const item = pickerItemsByUrl.get(urls[0]) || {};
     closeLovedPicker();
@@ -14563,6 +14579,7 @@ async function openElements(target = "refs") {
       : target === "video-refs" ? "video-refs"
       : target === "edit-global-refs" ? "edit-global-refs"
       : target === "edit-selection-refs" ? "edit-selection-refs"
+      : target === "shot-elements" ? "shot-elements"
       : "refs";
   if (elementsTarget === "refs") {
     const maxRef = getMaxRefImages();
@@ -14730,6 +14747,8 @@ function renderElementsGrid(items) {
 function toggleElementCard(card, asset) {
   const remaining = (elementsTarget === "video" || elementsTarget === "video-end")
     ? 1
+    : elementsTarget === "shot-elements"
+    ? 99
     : (elementsTarget === "video-refs"
         ? getMaxVideoReferenceImages() - videoReferenceImages.length
         : (elementsTarget === "edit-global-refs"
@@ -14818,7 +14837,9 @@ function updateElementsSelCount() {
 
 function updateElementsLimitNote() {
   let note = "";
-  if (elementsTarget === "video-end") {
+  if (elementsTarget === "shot-elements") {
+    note = "Select the talent in this shot. Order can be changed in the shot editor.";
+  } else if (elementsTarget === "video-end") {
     note = videoEndImage && videoEndImage.data
       ? "Choose one image to replace the current end frame."
       : "Choose one image to use as the video end frame.";
@@ -14849,6 +14870,13 @@ function updateElementsLimitNote() {
 async function confirmElements() {
   const assets = Object.values(elSelectedMap);
   closeElements();
+
+  if (elementsTarget === "shot-elements") {
+    if (window.directorShots && typeof window.directorShots.onElementsPicked === "function") {
+      window.directorShots.onElementsPicked(assets);
+    }
+    return;
+  }
 
   if (elementsTarget === "video-end") {
     const asset = assets[0];

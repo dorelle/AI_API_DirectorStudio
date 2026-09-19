@@ -17,6 +17,10 @@
       { key: "dialogue", label: "Dialogue / VO", type: "textarea" },
       { key: "audio_cue", label: "Audio cue" },
     ] },
+    { key: "prompt", label: "Prompt", fields: [
+      { key: "prompt", label: "Prompt", type: "textarea", rows: 4, wide: true },
+      { key: "negative_prompt", label: "Negative prompt", type: "textarea", wide: true },
+    ] },
     { key: "camera", label: "Camera", fields: [
       { key: "shot_size", label: "Shot size", list: ["Wide", "Medium", "Close"] },
       { key: "angle", label: "Angle", list: ["Eye level", "Low", "High", "Overhead"] },
@@ -31,6 +35,9 @@
       { key: "chain_from_previous", label: "Chain from previous shot's last frame", type: "checkbox" },
       { key: "engine", label: "Engine" },
     ] },
+    // Ordered attachments: what the shot sends besides the prompt. Order = provider reference order.
+    { key: "elements", label: "Elements", list: "elements", addLabel: "+ Add elements", empty: "No talent attached." },
+    { key: "assets", label: "Assets", list: "reference_assets", addLabel: "+ Add references", empty: "No reference images attached." },
     { key: "notes", label: "Notes", fields: [
       { key: "status", label: "Status", type: "select", options: Object.keys(STATUS_LABELS) },
       { key: "note", label: "Note", type: "textarea" },
@@ -486,7 +493,7 @@
     const value = fieldValue(shot, field);
     let control = "";
     if (field.type === "textarea") {
-      control = `<textarea class="ds-field-input" data-field="${field.key}" rows="2">${esc(value)}</textarea>`;
+      control = `<textarea class="ds-field-input" data-field="${field.key}" rows="${field.rows || 2}">${esc(value)}</textarea>`;
     } else if (field.type === "checkbox") {
       control = `<label class="ds-field-check"><input type="checkbox" data-field="${field.key}" ${value ? "checked" : ""}> <span>${esc(field.label)}</span></label>`;
     } else if (field.type === "select") {
@@ -496,7 +503,7 @@
       control = `<input class="ds-field-input" data-field="${field.key}" type="${field.type === "number" ? "number" : "text"}" ${field.type === "number" ? 'step="0.1" min="0"' : ""} value="${esc(value)}" ${listId ? `list="${listId}"` : ""} autocomplete="off">` +
         (field.list ? `<datalist id="${listId}">${field.list.map((option) => `<option value="${esc(option)}"></option>`).join("")}</datalist>` : "");
     }
-    return `<div class="ds-field${locked ? " is-locked" : ""}" data-field-wrap="${field.key}">
+    return `<div class="ds-field${locked ? " is-locked" : ""}${field.wide ? " ds-field-wide" : ""}" data-field-wrap="${field.key}">
       ${field.type === "checkbox" ? "" : `<div class="ds-field-label"><span>${esc(field.label)}</span>${lock}</div>`}
       ${control}
       ${field.type === "checkbox" ? lock : ""}
@@ -517,9 +524,9 @@
     }
     const sceneLocked = Array.isArray(shot.locked_fields) && shot.locked_fields.includes("scene");
     const sections = FIELD_GROUPS.map((group) => `
-      <details class="ds-section" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
-        <summary>${esc(group.label)}</summary>
-        <div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>
+      <details class="ds-section${group.list ? " ds-section-list" : ""}" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
+        <summary>${esc(group.label)}${group.list ? `<span class="ds-section-count">${(shot[group.list] || []).length}</span>` : ""}</summary>
+        ${group.list ? renderAttachmentList(shot, group) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`}
       </details>`).join("");
     host.innerHTML = `
       <div class="ds-editor-head">
@@ -542,6 +549,157 @@
     host.querySelectorAll("[data-lock]").forEach((button) => {
       button.addEventListener("click", () => toggleLock(shot.id, button.dataset.lock));
     });
+    bindAttachmentLists(shot);
+    ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
+  }
+
+  // ---- attachments: elements (talent ids) and reference_assets (paths) ---
+  let elementCatalog = null;        // id -> asset from /api/elements
+  let elementCatalogPromise = null;
+  let attachmentDrag = null;        // { list, index }
+  let pendingAttachShotId = "";
+
+  function ensureElementCatalog() {
+    if (elementCatalog) return Promise.resolve(false);
+    if (!elementCatalogPromise) {
+      elementCatalogPromise = fetch("/api/elements?category=all&per_page=500", { credentials: "same-origin" })
+        .then((response) => response.json())
+        .then((payload) => {
+          elementCatalog = {};
+          (payload.items || []).forEach((item) => { elementCatalog[String(item.id)] = item; });
+          return true;
+        })
+        .catch(() => { elementCatalog = {}; return false; });
+    }
+    return elementCatalogPromise;
+  }
+
+  function attachmentThumb(listKey, value) {
+    if (listKey === "elements") {
+      const asset = elementCatalog ? elementCatalog[String(value)] : null;
+      return { url: asset ? asset.img_url : "", label: asset ? asset.name : String(value), missing: Boolean(elementCatalog && !asset) };
+    }
+    const label = String(value).split("/").pop();
+    return { url: frameUrl({ first_frame: value }), label, missing: false };
+  }
+
+  function renderAttachmentList(shot, group) {
+    const values = Array.isArray(shot[group.list]) ? shot[group.list] : [];
+    const locked = Array.isArray(shot.locked_fields) && shot.locked_fields.includes(group.list);
+    const chips = values.map((value, index) => {
+      const thumb = attachmentThumb(group.list, value);
+      return `<div class="ds-chip${thumb.missing ? " is-missing" : ""}" draggable="true" data-list="${group.list}" data-index="${index}" title="${esc(thumb.label)}${thumb.missing ? " (not found in Elements)" : ""}">
+        <span class="ds-chip-pos">${index + 1}</span>
+        ${thumb.url ? `<img src="${esc(thumb.url)}" alt="" draggable="false">` : `<span class="ds-chip-noimg"></span>`}
+        <span class="ds-chip-label">${esc(thumb.label)}</span>
+        <button type="button" class="ds-chip-remove" data-remove="${index}" title="Remove">&times;</button>
+      </div>`;
+    }).join("");
+    return `<div class="ds-attachments" data-list="${group.list}">
+      <div class="ds-chip-row">${chips || `<span class="ds-chip-empty">${esc(group.empty)}</span>`}</div>
+      <div class="ds-attach-actions">
+        <button type="button" class="history-filter-toggle" data-attach-add="${group.list}">${esc(group.addLabel)}</button>
+        <button type="button" class="ds-lock${locked ? " is-locked" : ""}" data-lock="${group.list}" title="${locked ? "Locked by hand edit \u2014 click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${locked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>
+        <span class="ds-attach-hint">Drag to reorder \u00b7 order is the reference order</span>
+      </div>
+    </div>`;
+  }
+
+  function bindAttachmentLists(shot) {
+    document.querySelectorAll("#dsShotEditor [data-attach-add]").forEach((button) => {
+      button.addEventListener("click", () => {
+        pendingAttachShotId = String(shot.id);
+        if (button.dataset.attachAdd === "elements") {
+          if (typeof window.openElements === "function") window.openElements("shot-elements");
+        } else if (typeof window.openLovedPicker === "function") {
+          window.openLovedPicker("shot-refs");
+        }
+      });
+    });
+    document.querySelectorAll("#dsShotEditor .ds-attachments").forEach((container) => {
+      const listKey = container.dataset.list;
+      container.querySelectorAll("[data-remove]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const values = (shot[listKey] || []).slice();
+          values.splice(Number(button.dataset.remove), 1);
+          saveAttachmentList(shot.id, listKey, values);
+        });
+      });
+      container.querySelectorAll(".ds-chip").forEach((chip) => {
+        const index = Number(chip.dataset.index);
+        chip.addEventListener("dragstart", (event) => {
+          attachmentDrag = { list: listKey, index };
+          chip.classList.add("is-dragging");
+          event.dataTransfer.effectAllowed = "move";
+          try { event.dataTransfer.setData("text/plain", `ds-attach:${listKey}:${index}`); } catch (e) {}
+        });
+        chip.addEventListener("dragend", () => {
+          attachmentDrag = null;
+          container.querySelectorAll(".ds-chip").forEach((el) => el.classList.remove("is-dragging", "drop-before", "drop-after"));
+        });
+        chip.addEventListener("dragover", (event) => {
+          if (!attachmentDrag || attachmentDrag.list !== listKey || attachmentDrag.index === index) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          const rect = chip.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          chip.classList.toggle("drop-before", before);
+          chip.classList.toggle("drop-after", !before);
+        });
+        chip.addEventListener("dragleave", () => chip.classList.remove("drop-before", "drop-after"));
+        chip.addEventListener("drop", (event) => {
+          if (!attachmentDrag || attachmentDrag.list !== listKey || attachmentDrag.index === index) return;
+          event.preventDefault();
+          const rect = chip.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          const values = (shot[listKey] || []).slice();
+          const [moved] = values.splice(attachmentDrag.index, 1);
+          let target = values.indexOf(shot[listKey][index]);
+          if (target < 0) target = index;
+          values.splice(before ? target : target + 1, 0, moved);
+          saveAttachmentList(shot.id, listKey, values);
+        });
+      });
+    });
+  }
+
+  async function saveAttachmentList(shotId, listKey, values) {
+    const shot = findShot(shotId);
+    if (!shot) return;
+    const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
+    if (!locked.includes(listKey)) locked.push(listKey);
+    try {
+      const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { [listKey]: values, locked_fields: locked } });
+      const index = shots.findIndex((item) => item.id === payload.shot.id);
+      if (index >= 0) shots[index] = payload.shot;
+      if (String(selectedId) === String(shotId)) renderEditor();
+      flashSaved("Saved");
+    } catch (error) {
+      setStatusLine(error.message || "Could not save.", "error");
+    }
+  }
+
+  function onElementsPicked(assets) {
+    const shotId = pendingAttachShotId || selectedId;
+    pendingAttachShotId = "";
+    const shot = findShot(shotId);
+    if (!shot || !Array.isArray(assets) || !assets.length) return;
+    if (!elementCatalog) elementCatalog = {};
+    assets.forEach((asset) => { if (asset && asset.id) elementCatalog[String(asset.id)] = asset; });
+    const values = (shot.elements || []).slice();
+    assets.forEach((asset) => { const id = String(asset.id || ""); if (id && !values.includes(id)) values.push(id); });
+    saveAttachmentList(shot.id, "elements", values);
+  }
+
+  function onReferencesPicked(urls, items) {
+    const shotId = pendingAttachShotId || selectedId;
+    pendingAttachShotId = "";
+    const shot = findShot(shotId);
+    if (!shot || !Array.isArray(urls) || !urls.length) return;
+    const values = (shot.reference_assets || []).slice();
+    urls.forEach((url) => { const path = String(url || "").trim(); if (path && !values.includes(path)) values.push(path); });
+    saveAttachmentList(shot.id, "reference_assets", values);
   }
 
   function flashSaved(text) {
@@ -626,7 +784,7 @@
     onScopeChange(null);
   }
 
-  window.directorShots = { reload: loadShots, select: selectShot, onFramePicked, setFirstFrame };
+  window.directorShots = { reload: loadShots, select: selectShot, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });
