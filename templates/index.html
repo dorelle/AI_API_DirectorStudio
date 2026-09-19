@@ -504,6 +504,8 @@
       <select id="modelSelect" onchange="onModelChange()">
         <option value="gpt-image-2-edit">GPT Image 2 Edit</option>
         <option value="gpt-image-2">GPT Image 2</option>
+        <option value="gpt-image-25-flare">GPT Image 2.5 Flare</option>
+        <option value="gpt-image-25-sunburst">GPT Image 2.5 Sunburst</option>
         <option value="nano-banana-2">Nano Banana 2</option>
         <option value="seedream-45">Seedream 4.5</option>
         <option value="seedream-5-lite">Seedream 5 Lite</option>
@@ -1111,6 +1113,8 @@
                   <select id="modelFooterSelect" class="footer-meta-select" onchange="onFooterModelChange()">
                     <option value="gpt-image-2-edit">GPT Image 2 Edit</option>
                     <option value="gpt-image-2">GPT Image 2</option>
+                    <option value="gpt-image-25-flare">GPT Image 2.5 Flare</option>
+                    <option value="gpt-image-25-sunburst">GPT Image 2.5 Sunburst</option>
                     <option value="nano-banana-2">Nano Banana 2</option>
                     <option value="seedream-45">Seedream 4.5</option>
                     <option value="seedream-5-lite">Seedream 5 Lite</option>
@@ -2539,7 +2543,7 @@ function estimateImageGenerationCost() {
   const numImages = Math.max(1, parseInt(document.getElementById("numImgRange")?.value || "1", 10) || 1);
   const familyId = String(selection.familyId || "");
 
-  if (familyId === "gpt-image-2" || familyId === "gpt-image-2-edit") {
+  if (familyId.startsWith("gpt-image-2")) {   // gpt-image-2, -edit, and the 2.5 previews share the size table
     const dims = computePromptBarGptImage2Dimensions(aspectRatio, imageSize);
     const perImage = estimatePromptBarGptImage2PricePerImage(dims.width, dims.height);
     if (perImage == null) {

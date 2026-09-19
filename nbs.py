@@ -919,6 +919,11 @@ FAL_GPT_IMAGE_2_EDIT_ID         = "fal-ai/gpt-image-2/edit"
 OPENAI_GPT_IMAGE_2_TEXT_ID      = "openai/gpt-image-2"
 OPENAI_GPT_IMAGE_2_EDIT_ID      = "openai/gpt-image-2/edit"
 OPENAI_GPT_IMAGE_2_API_MODEL    = "gpt-image-2"
+# GPT Image 2.5 previews (OpenAI only). One model each: text-to-image, or an edit when references are attached.
+OPENAI_GPT_IMAGE_25_MODELS = {
+    "openai/gpt-image-2.5-flare":    {"api_model": "gpt-image-2.5-flare",    "family": "gpt-image-25-flare",    "label": "GPT Image 2.5 Flare",    "badge": "GPT25F"},
+    "openai/gpt-image-2.5-sunburst": {"api_model": "gpt-image-2.5-sunburst", "family": "gpt-image-25-sunburst", "label": "GPT Image 2.5 Sunburst", "badge": "GPT25S"},
+}
 FAL_SEEDREAM_45_TEXT_ID         = "fal-ai/bytedance/seedream/v4.5/text-to-image"
 FAL_SEEDREAM_45_EDIT_ID         = "fal-ai/bytedance/seedream/v4.5/edit"
 FAL_SEEDREAM_5_TEXT_ID          = "fal-ai/bytedance/seedream/v5/lite/text-to-image"
@@ -1359,6 +1364,21 @@ MODELS_INFO = {
         "max_ref_images": 16,
         "ref_note":       "OpenAI Images API - edit model, requires at least 1 reference image and supports up to 16"
     },
+    **{
+        model_id: {
+            "provider":       "openai",
+            "provider_label": "OpenAI",
+            "family":         spec["family"],
+            "label":          spec["label"],
+            "resolutions":    ["1K","2K","4K"],
+            "thinking":       False,
+            "aspect_ratios":  ASPECT_RATIOS_GPT_IMAGE_2,
+            "max_images":     4,
+            "max_ref_images": 16,
+            "ref_note":       "OpenAI Images API (preview) - text-to-image, or an edit when reference images are attached (up to 16)"
+        }
+        for model_id, spec in OPENAI_GPT_IMAGE_25_MODELS.items()
+    },
     "fal-ai/bytedance/seedream/v4.5/text-to-image": {
         "provider":       "fal",
         "provider_label": "Fal",
@@ -1456,6 +1476,16 @@ MODEL_FAMILIES = {
             "fal": FAL_GPT_IMAGE_2_TEXT_ID,
             "openai": OPENAI_GPT_IMAGE_2_TEXT_ID,
         },
+    },
+    **{
+        spec["family"]: {
+            "label": spec["label"],
+            "badge": spec["badge"],
+            "default_provider": "openai",
+            "provider_order": ["openai"],
+            "providers": {"openai": model_id},
+        }
+        for model_id, spec in OPENAI_GPT_IMAGE_25_MODELS.items()
     },
     "nano-banana-2": {
         "label": "Nano Banana 2",
@@ -13779,6 +13809,10 @@ def _openai_gpt_image_2_size(image_size: str, aspect_ratio: str) -> tuple[int, i
     return width, height
 
 
+def _openai_api_model_for(model_id: str) -> str:
+    return OPENAI_GPT_IMAGE_25_MODELS.get(model_id, {}).get("api_model") or OPENAI_GPT_IMAGE_2_API_MODEL
+
+
 def _openai_gpt_image_2_result(body: dict, model_id: str, data: dict, width: int, height: int, prompt: str, ref_images: list) -> dict:
     items = data.get("data") or []
     png_images = []
@@ -13809,7 +13843,7 @@ def _openai_gpt_image_2_result(body: dict, model_id: str, data: dict, width: int
         "seedMode": "random",   # the Images API has no seed
         "seedValue": 0,
         "openaiUsage": {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")},
-        "openaiApiModel": OPENAI_GPT_IMAGE_2_API_MODEL,
+        "openaiApiModel": _openai_api_model_for(model_id),
         "deliveredSize": f"{width}x{height}",
     }, body), body)
     return {
@@ -13834,7 +13868,7 @@ def run_openai_gpt_image_2_generation_job(body: dict, api_key: str) -> dict:
     """GPT Image 2 via OpenAI's Images API (POST /images/generations). Same options as the Fal route."""
     body = normalize_generation_request(body)
     model_id = body.get("model", OPENAI_GPT_IMAGE_2_TEXT_ID)
-    if model_id != OPENAI_GPT_IMAGE_2_TEXT_ID:
+    if model_id != OPENAI_GPT_IMAGE_2_TEXT_ID and model_id not in OPENAI_GPT_IMAGE_25_MODELS:
         raise ValueError("Invalid model")
     raw_prompt = body.get("prompt", "")
     prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2) if isinstance(raw_prompt, dict) else str(raw_prompt).strip()
@@ -13844,7 +13878,7 @@ def run_openai_gpt_image_2_generation_job(body: dict, api_key: str) -> dict:
         raise ValueError("GPT Image 2 does not support reference images in the generation tab. Use GPT Image 2 Edit.")
     num_images = max(1, min(int(body.get("numberOfImages", 1)), 4))
     width, height = _openai_gpt_image_2_size(body.get("imageSize", "1K"), body.get("aspectRatio", "1:1"))
-    payload = {"model": OPENAI_GPT_IMAGE_2_API_MODEL, "prompt": prompt, "n": num_images, "size": f"{width}x{height}",
+    payload = {"model": _openai_api_model_for(model_id), "prompt": prompt, "n": num_images, "size": f"{width}x{height}",
                "quality": "high", "output_format": "png"}
     try:
         response = requests.post(f"{OPENAI_API_BASE}/images/generations", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -13862,7 +13896,7 @@ def run_openai_gpt_image_2_edit_job(body: dict, api_key: str) -> dict:
     """GPT Image 2 Edit via OpenAI's Images API (POST /images/edits, multipart, image[] up to 16)."""
     body = normalize_generation_request(body)
     model_id = body.get("model", OPENAI_GPT_IMAGE_2_EDIT_ID)
-    if model_id != OPENAI_GPT_IMAGE_2_EDIT_ID:
+    if model_id != OPENAI_GPT_IMAGE_2_EDIT_ID and model_id not in OPENAI_GPT_IMAGE_25_MODELS:
         raise ValueError("Invalid model")
     raw_prompt = body.get("prompt", "")
     prompt = json.dumps(raw_prompt, ensure_ascii=False, indent=2) if isinstance(raw_prompt, dict) else str(raw_prompt).strip()
@@ -13878,7 +13912,7 @@ def run_openai_gpt_image_2_edit_job(body: dict, api_key: str) -> dict:
         mime = str(img.get("mime_type") or "image/png")
         ext = "jpg" if "jpeg" in mime or "jpg" in mime else ("webp" if "webp" in mime else "png")
         files.append(("image[]", (f"reference-{index + 1}.{ext}", base64.b64decode(img["data"]), mime)))
-    fields = {"model": OPENAI_GPT_IMAGE_2_API_MODEL, "prompt": prompt, "n": str(num_images), "size": f"{width}x{height}",
+    fields = {"model": _openai_api_model_for(model_id), "prompt": prompt, "n": str(num_images), "size": f"{width}x{height}",
               "quality": "high", "output_format": "png"}
     try:
         response = requests.post(f"{OPENAI_API_BASE}/images/edits", headers={"Authorization": f"Bearer {api_key}"},
@@ -14284,7 +14318,11 @@ def run_generation_job(body: dict, config: dict) -> dict:
             return run_openai_gpt_image_2_edit_job(payload, openai_key)
         if family == "gpt-image-2":
             return run_openai_gpt_image_2_generation_job(payload, openai_key)
-        raise ValueError("OpenAI serves GPT Image 2 only.")
+        if model_id in OPENAI_GPT_IMAGE_25_MODELS:   # 2.5 previews: one model, edit when references are attached
+            if payload.get("refImages"):
+                return run_openai_gpt_image_2_edit_job(payload, openai_key)
+            return run_openai_gpt_image_2_generation_job(payload, openai_key)
+        raise ValueError("OpenAI serves the GPT Image models only.")
 
     raise ValueError("Unsupported provider")
 
