@@ -103,6 +103,14 @@
           <span class="project-modal-label">Resolve output folder</span>
           <input class="project-modal-input" id="projectModalResolveFolder" type="text" placeholder="Path for DaVinci Resolve exports" autocomplete="off">
         </label>
+        <div class="project-modal-field project-modal-playbook">
+          <div class="project-modal-playbook-head">
+            <span class="project-modal-label">Playbook</span>
+            <label class="project-meta-new-btn project-modal-upload" title="Load a .md or .txt file into the playbook">Upload .md / .txt<input type="file" id="projectModalPlaybookFile" accept=".md,.txt,text/markdown,text/plain" style="display:none"></label>
+            <span class="project-modal-note" id="projectModalPlaybookInfo"></span>
+          </div>
+          <textarea class="project-modal-input project-modal-playbook-text" id="projectModalPlaybook" rows="12" placeholder="The film's constant: premise, format, cast, setting, world canon, tone. Paste markdown or upload a file. Stored exactly as written."></textarea>
+        </div>
       </div>
       <div class="project-modal-note" id="projectModalRenameNote" style="display:none">Renaming changes where new assets file. Existing assets stay under the old Client/Project folders.</div>
       <div class="project-modal-error" id="projectModalError"></div>

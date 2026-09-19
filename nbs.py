@@ -483,6 +483,9 @@ DEFAULT_CONFIG = {
     "kling_api_token": "",
     "runway_api_key": "",
     "luma_api_key": "",
+    "openai_api_key": "",
+    "openai_model": "gpt-4o-mini",
+    "agent_instructions": "",
     "flask_secret_key": "",
     "asset_metadata_memory": {
         "clients": [ASSET_UNCATEGORIZED_VALUE],
@@ -2234,6 +2237,17 @@ def ensure_task_runs_columns(conn):
             conn.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {ddl}")
 
 
+def ensure_projects_columns(conn):
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+    desired = {
+        # Task 14: the film's constant, stored as written (markdown or plain text)
+        "playbook": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, ddl in desired.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE projects ADD COLUMN {name} {ddl}")
+
+
 def ensure_shots_columns(conn):
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(shots)").fetchall()}
     desired = {
@@ -2410,6 +2424,18 @@ def init_studio_db():
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS agent_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            meta TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS scene_cast (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id INTEGER NOT NULL,
@@ -2441,6 +2467,7 @@ def init_studio_db():
         )
         """
     )
+    ensure_projects_columns(conn)
     ensure_shots_columns(conn)
     ensure_task_templates_columns(conn)
     now_ts = utc_now_iso()
@@ -2524,6 +2551,7 @@ def project_row_to_dict(row) -> dict:
         settings = {}
     item["settings"] = settings if isinstance(settings, dict) else {}
     item["archived"] = bool(item.get("archived"))
+    item["playbook"] = str(item.get("playbook") or "")
     item["assetClient"] = normalize_asset_scope_text(item.get("client", "")) or ASSET_UNCATEGORIZED_VALUE
     item["assetProject"] = normalize_asset_scope_text(item.get("name", "")) or ASSET_UNCATEGORIZED_VALUE
     return item
@@ -2564,8 +2592,8 @@ def create_project(body: dict) -> dict:
     init_studio_db()
     conn = get_db_connection()
     cursor = conn.execute(
-        "INSERT INTO projects (name, client, type, settings, created_at, archived) VALUES (?, ?, ?, ?, ?, 0)",
-        (name, client, project_type, json.dumps(settings, ensure_ascii=False), utc_now_iso()),
+        "INSERT INTO projects (name, client, type, settings, created_at, archived, playbook) VALUES (?, ?, ?, ?, ?, 0, ?)",
+        (name, client, project_type, json.dumps(settings, ensure_ascii=False), utc_now_iso(), str(body.get("playbook") or "")),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -2598,6 +2626,8 @@ def update_project(project_id, body: dict) -> dict:
         updates["settings"] = json.dumps(normalize_project_settings(project_type, merged_settings), ensure_ascii=False)
     if "archived" in body:
         updates["archived"] = 1 if body.get("archived") else 0
+    if "playbook" in body:
+        updates["playbook"] = str(body.get("playbook") or "")   # as written: no strip, no parse
     if updates:
         conn = get_db_connection()
         assignments = ", ".join(f"{column} = ?" for column in updates)
@@ -3518,6 +3548,240 @@ def delete_style(style_id) -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Workbench agent (Director Studio, Task 14). Reads everything, proposes anything,
+# writes nothing: the only writes here are the conversation rows themselves.
+# ---------------------------------------------------------------------------
+OPENAI_API_BASE = "https://api.openai.com/v1"
+AGENT_DIGEST_BUDGET_TOKENS = 60000       # what the digest may occupy before truncation
+AGENT_HISTORY_WARN_TOKENS = 20000        # when the running exchange starts to cost real money
+AGENT_FRAMING = (
+    "You are the project's assistant inside Directors Studio. Below this framing is a digest of the whole "
+    "project as it is right now: playbook, scenes, cast, shots, elements, styles. Treat it as the current truth.\n"
+    "You read everything and may propose anything: answer questions from the playbook and the records, point out "
+    "contradictions between a shot and what its scene established, suggest shots for a scene, draft a prompt for a "
+    "shot, or explain your reasoning when asked.\n"
+    "You cannot change anything. Nothing you write is applied to the project; the user acts on it by hand. "
+    "Do not claim to have created, edited or deleted a record, and do not ask for permission to do so - write the "
+    "proposal as text the user can act on, naming scenes and shots by their slugs."
+)
+
+
+def estimate_tokens(text) -> int:
+    """No tokenizer dependency: ~4 characters per token is close enough for budgeting."""
+    return max(0, (len(str(text or "")) + 3) // 4)
+
+
+def _agent_shot_line(shot: dict) -> str:
+    camera = ", ".join(f"{key} {shot.get(key)}" for key in ("shot_size", "angle", "lens", "aperture", "speed_ramp") if shot.get(key))
+    movement = ", ".join(shot.get("movement") or [])
+    takes = shot.get("takes") or {}
+    bits = [
+        f"{shot['slug']} [#{shot.get('_pos', '?')}]",
+        f"scene {shot.get('_scene_slug') or (shot.get('scene') or '-')}",
+        f"status {shot.get('status')}",
+        f"takes {takes.get('count', 0)}" + (" (approved)" if takes.get("approved") else ""),
+    ]
+    if shot.get("duration_seconds") not in (None, ""):
+        bits.append(f"{shot['duration_seconds']}s")
+    if camera:
+        bits.append(camera)
+    if movement:
+        bits.append(f"movement {movement}")
+    line = " | ".join(bits)
+    if shot.get("action_text"):
+        line += f"\n    action: {shot['action_text']}"
+    if shot.get("dialogue"):
+        line += f"\n    dialogue: {shot['dialogue']}"
+    if shot.get("audio_cue"):
+        line += f"\n    audio: {shot['audio_cue']}"
+    if shot.get("elements"):
+        line += "\n    attached: " + ", ".join(f"{e['ref']} ({e['role']})" for e in shot["elements"])
+    return line
+
+
+def build_project_digest(project: dict, focus_scene_id=None, budget_tokens: int = AGENT_DIGEST_BUDGET_TOKENS) -> tuple[str, dict]:
+    """The whole project as text for the model. Returns (digest, info) where info carries the token
+    estimate and every truncation made, in order of least importance:
+    1) other scenes' scripts, 2) element detail, 3) shot action/dialogue text."""
+    scenes = fetch_scenes(project["id"])
+    shots = fetch_shots(project["id"])
+    scene_by_id = {scene["id"]: scene for scene in scenes}
+    for index, shot in enumerate(shots):
+        shot["_pos"] = index + 1
+        shot["_scene_slug"] = scene_by_id[shot["scene_id"]]["slug"] if shot.get("scene_id") in scene_by_id else ""
+    cast_by_scene = {scene["id"]: fetch_cast(scene["id"]) for scene in scenes}
+    styles = fetch_styles(project_id=project["id"])
+    elements = []
+    for folder_name, cat_meta in ELEMENTS_CATEGORIES.items():
+        folder_path = os.path.join(ELEMENTS_DIR, folder_name)
+        if not os.path.isdir(folder_path):
+            continue
+        for json_path in list_talent_jsons(folder_path):
+            talent = load_talent_json(json_path)
+            if talent:
+                elements.append((str(talent.get("id", "")), str(talent.get("name", "")), normalize_element_type(talent.get("type") or ELEMENT_FOLDER_TYPES.get(folder_name, "talent"))))
+
+    try:
+        focus_id = int(focus_scene_id) if focus_scene_id not in (None, "") else None
+    except (TypeError, ValueError):
+        focus_id = None
+
+    settings = project.get("settings") or {}
+    head = [f"# PROJECT: {project['name']} (client {project.get('client') or '-'}, type {project['type']})"]
+    if settings:
+        head.append("settings: " + ", ".join(f"{key} {value}" for key, value in settings.items() if value))
+    playbook = str(project.get("playbook") or "").strip()
+    head.append("\n## PLAYBOOK\n" + (playbook if playbook else "(no playbook yet)"))
+
+    def scene_block(scene, with_script):
+        member_lines = [
+            f"    - {m.get('handle') or ''} {m.get('character_name') or ''} / look {m.get('look_name') or '-'} / element {m.get('element_id')}" + ("" if m.get("element") else " (element missing)")
+            for m in cast_by_scene.get(scene["id"], [])
+        ]
+        lines = [f"### {scene['slug']} [#{scenes.index(scene) + 1}] {scene.get('name') or ''}".rstrip()]
+        if scene.get("brief"):
+            lines.append(f"  brief: {scene['brief']}")
+        if scene.get("environment_id"):
+            lines.append(f"  environment: {scene['environment_id']}")
+        if member_lines:
+            lines.append("  cast:\n" + "\n".join(member_lines))
+        script = str(scene.get("script") or "").strip()
+        if script:
+            if with_script:
+                lines.append("  script:\n" + "\n".join("    " + row for row in script.splitlines()))
+            else:
+                lines.append(f"  script: ({len(script.splitlines())} lines, omitted - ask to see it)")
+        return "\n".join(lines)
+
+    def assemble(script_scene_ids, include_elements, shot_text):
+        parts = list(head)
+        parts.append("\n## SCENES (in film order)")
+        parts.extend(scene_block(scene, scene["id"] in script_scene_ids) for scene in scenes) if scenes else parts.append("(no scenes yet)")
+        parts.append("\n## SHOTS (in film order)")
+        if shots:
+            for shot in shots:
+                line = _agent_shot_line(shot)
+                if not shot_text:
+                    line = line.split("\n")[0]
+                parts.append("- " + line)
+        else:
+            parts.append("(no shots yet)")
+        parts.append("\n## ELEMENTS")
+        if include_elements:
+            parts.append("\n".join(f"- {eid}: {name} ({etype})" for eid, name, etype in elements) if elements else "(none)")
+        else:
+            parts.append(f"({len(elements)} elements - list omitted)")
+        parts.append("\n## STYLES")
+        parts.append("\n".join(f"- {st['name']}: {st.get('text') or '(no text)'}" for st in styles) if styles else "(none)")
+        return "\n".join(parts)
+
+    truncations = []
+    scene_ids = {scene["id"] for scene in scenes}
+    digest = assemble(scene_ids, True, True)
+    if estimate_tokens(digest) > budget_tokens:
+        kept = {focus_id} if focus_id in scene_ids else set()
+        dropped = [scene["slug"] for scene in scenes if scene["id"] not in kept and str(scene.get("script") or "").strip()]
+        digest = assemble(kept, True, True)
+        if dropped:
+            truncations.append("scripts omitted for " + ", ".join(dropped) + (" (the scene under discussion is kept in full)" if kept else ""))
+    if estimate_tokens(digest) > budget_tokens:
+        digest = assemble({focus_id} if focus_id in scene_ids else set(), False, True)
+        truncations.append("element list omitted (names only were included)")
+    if estimate_tokens(digest) > budget_tokens:
+        digest = assemble({focus_id} if focus_id in scene_ids else set(), False, False)
+        truncations.append("shot action, dialogue, audio and attachments omitted (slug, scene, camera and status kept)")
+    if estimate_tokens(digest) > budget_tokens:
+        limit = budget_tokens * 4
+        digest = digest[:limit] + "\n\n[digest cut at the token budget]"
+        truncations.append(f"digest hard-cut at ~{budget_tokens} tokens")
+    info = {
+        "tokens": estimate_tokens(digest),
+        "budget_tokens": budget_tokens,
+        "truncations": truncations,
+        "counts": {"scenes": len(scenes), "shots": len(shots), "cast": sum(len(v) for v in cast_by_scene.values()), "elements": len(elements), "styles": len(styles)},
+        "playbook_tokens": estimate_tokens(playbook),
+        "focus_scene_id": focus_id,
+    }
+    return digest, info
+
+
+def fetch_agent_messages(project_id) -> list[dict]:
+    init_studio_db()
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM agent_messages WHERE project_id = ? ORDER BY id ASC", (int(project_id),)).fetchall()
+    conn.close()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["meta"] = json.loads(item.get("meta") or "{}")
+        except json.JSONDecodeError:
+            item["meta"] = {}
+        out.append(item)
+    return out
+
+
+def append_agent_message(project_id, role: str, content: str, meta: dict | None = None) -> dict:
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "INSERT INTO agent_messages (project_id, role, content, meta, created_at) VALUES (?, ?, ?, ?, ?)",
+        (int(project_id), role, content, json.dumps(meta or {}, ensure_ascii=False), utc_now_iso()),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"id": new_id, "project_id": int(project_id), "role": role, "content": content, "meta": meta or {}}
+
+
+def clear_agent_messages(project_id) -> int:
+    conn = get_db_connection()
+    n = conn.execute("SELECT COUNT(*) AS n FROM agent_messages WHERE project_id = ?", (int(project_id),)).fetchone()["n"]
+    conn.execute("DELETE FROM agent_messages WHERE project_id = ?", (int(project_id),))
+    conn.commit()
+    conn.close()
+    return int(n)
+
+
+def build_agent_system_prompt(instructions: str, digest: str, truncations: list[str]) -> str:
+    parts = []
+    if instructions.strip():
+        parts.append(instructions.strip())
+    parts.append(AGENT_FRAMING)
+    if truncations:
+        parts.append("Note: to fit the context, the digest leaves out: " + "; ".join(truncations) + ". Say so if the user asks about something that was left out.")
+    parts.append("=== PROJECT DIGEST ===\n" + digest)
+    return "\n\n".join(parts)
+
+
+def call_openai_chat(api_key: str, model: str, messages: list[dict], timeout: int = 120) -> dict:
+    """The one OpenAI call: chat completions over the existing HTTP client. Returns {ok, text, usage} or {ok: False, error}."""
+    try:
+        response = requests.post(
+            f"{OPENAI_API_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "messages": messages, "temperature": 0.4},
+            timeout=timeout,
+        )
+    except requests.exceptions.Timeout:
+        return {"ok": False, "error": f"OpenAI timeout ({timeout}s)"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    if response.status_code != 200:
+        try:
+            err = response.json().get("error", {}).get("message", f"HTTP {response.status_code}")
+        except Exception:
+            err = f"HTTP {response.status_code}: {response.text[:200]}"
+        return {"ok": False, "error": err}
+    data = response.json()
+    text = ""
+    for choice in data.get("choices", []):
+        text = str((choice.get("message") or {}).get("content") or "")
+        if text:
+            break
+    return {"ok": True, "text": text.strip(), "usage": data.get("usage") or {}}
 
 
 # ---------------------------------------------------------------------------
@@ -5997,6 +6261,7 @@ def settings():
     byteplus_api_key = config.get("byteplus_api_key", "") or config.get("seedream_api_key", "")
     kling_api_token = config.get("kling_api_token", "")
     luma_api_key = config.get("luma_api_key", "")
+    openai_api_key = config.get("openai_api_key", "")
     return render_template("settings.html",
                            masked_key=mask_api_key(api_key),
                            has_key=bool(api_key),
@@ -6007,6 +6272,10 @@ def settings():
                            masked_kling_token=mask_api_key(kling_api_token),
                            has_kling_token=bool(kling_api_token),
                            masked_luma_key=mask_api_key(luma_api_key),
+                           masked_openai_key=mask_api_key(openai_api_key),
+                           has_openai_key=bool(openai_api_key),
+                           openai_model=config.get("openai_model", "gpt-4o-mini"),
+                           agent_instructions=config.get("agent_instructions", ""),
                            has_luma_key=bool(luma_api_key),
                            stats=stats,
                            vision_models=VISION_MODELS_INFO,
@@ -9512,6 +9781,93 @@ def api_scenes_update(scene_id):
     return jsonify({"ok": True, "scene": scene})
 
 
+# ---------------------------------------------------------------------------
+# API - Workbench agent (Director Studio). Read-only over the project.
+# ---------------------------------------------------------------------------
+@app.route("/api/agent/status")
+@login_required
+def api_agent_status():
+    config = load_config()
+    return jsonify({
+        "ok": True,
+        "has_key": bool((config.get("openai_api_key") or "").strip()),
+        "model": config.get("openai_model") or "gpt-4o-mini",
+        "has_instructions": bool((config.get("agent_instructions") or "").strip()),
+        "history_warn_tokens": AGENT_HISTORY_WARN_TOKENS,
+    })
+
+
+@app.route("/api/agent/digest")
+@login_required
+def api_agent_digest():
+    project = get_project(request.args.get("project_id"))
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    digest, info = build_project_digest(project, request.args.get("scene_id"))
+    return jsonify({"ok": True, "digest": digest, "info": info, "framing": AGENT_FRAMING})
+
+
+@app.route("/api/agent/history")
+@login_required
+def api_agent_history():
+    project = get_project(request.args.get("project_id"))
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    messages = fetch_agent_messages(project["id"])
+    return jsonify({"ok": True, "messages": messages, "history_tokens": sum(estimate_tokens(m["content"]) for m in messages)})
+
+
+@app.route("/api/agent/history", methods=["DELETE"])
+@login_required
+def api_agent_history_clear():
+    project = get_project(request.args.get("project_id"))
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    return jsonify({"ok": True, "cleared": clear_agent_messages(project["id"])})
+
+
+@app.route("/api/agent/message", methods=["POST"])
+@login_required
+def api_agent_message():
+    body = request.get_json(silent=True) or {}
+    project = get_project(body.get("project_id"))
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    text = str(body.get("message") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "Message is empty"}), 400
+    config = load_config()
+    api_key = (config.get("openai_api_key") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "No OpenAI API key is set. Add one in Settings."}), 400
+    model = config.get("openai_model") or "gpt-4o-mini"
+    instructions = str(config.get("agent_instructions") or "")
+
+    history = fetch_agent_messages(project["id"])
+    digest, info = build_project_digest(project, body.get("scene_id"))
+    system_prompt = build_agent_system_prompt(instructions, digest, info["truncations"])
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend({"role": m["role"], "content": m["content"]} for m in history if m["role"] in ("user", "assistant"))
+    messages.append({"role": "user", "content": text})
+
+    user_row = append_agent_message(project["id"], "user", text, {"scene_id": info["focus_scene_id"]})
+    result = call_openai_chat(api_key, model, messages)
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": result.get("error", "OpenAI call failed"), "user_message": user_row,
+                        "digest_info": info}), 502
+    reply_meta = {
+        "model": model,
+        "usage": result.get("usage") or {},
+        "digest_tokens": info["tokens"],
+        "truncations": info["truncations"],
+        "system_tokens": estimate_tokens(system_prompt),
+    }
+    reply_row = append_agent_message(project["id"], "assistant", result["text"], reply_meta)
+    history_tokens = sum(estimate_tokens(m["content"]) for m in history) + estimate_tokens(text) + estimate_tokens(result["text"])
+    return jsonify({"ok": True, "user_message": user_row, "reply": reply_row, "digest_info": info,
+                    "history_tokens": history_tokens, "history_warn_tokens": AGENT_HISTORY_WARN_TOKENS})
+
+
 @app.route("/api/scenes/<int:scene_id>/cast", methods=["GET"])
 @login_required
 def api_scene_cast_list(scene_id):
@@ -10716,8 +11072,36 @@ def api_save_config():
         config["kling_api_token"] = data["kling_api_token"].strip()
     if "luma_api_key" in data:
         config["luma_api_key"] = data["luma_api_key"].strip()
+    if "openai_api_key" in data:
+        config["openai_api_key"] = data["openai_api_key"].strip()
+    if "openai_model" in data:
+        config["openai_model"] = str(data["openai_model"] or "").strip() or "gpt-4o-mini"
+    if "agent_instructions" in data:
+        config["agent_instructions"] = str(data["agent_instructions"] or "")   # the user's rules, as written
     save_config(config)
     return jsonify({"ok": True})
+
+
+@app.route("/api/verify-openai-key", methods=["POST"])
+@login_required
+def api_verify_openai_key():
+    data = request.get_json() or {}
+    key = (data.get("openai_api_key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "OpenAI API key is empty"})
+    try:
+        response = requests.get(f"{OPENAI_API_BASE}/models", headers={"Authorization": f"Bearer {key}"}, timeout=45)
+    except requests.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "Connection timeout"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+    if response.status_code == 200:
+        return jsonify({"ok": True, "message": "Valid OpenAI key and API access confirmed."})
+    try:
+        err = response.json().get("error", {}).get("message", f"HTTP {response.status_code}")
+    except Exception:
+        err = f"HTTP {response.status_code}"
+    return jsonify({"ok": False, "error": err})
 
 
 @app.route("/api/verify-fal-key", methods=["POST"])

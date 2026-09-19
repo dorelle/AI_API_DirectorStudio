@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <link rel="stylesheet" href="/static/style.css?v=20260919b">
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
-  <script defer src="/static/project_meta.js?v=20260919a"></script>
+  <script defer src="/static/project_meta.js?v=20260919b"></script>
 <style>
   .wb-main { max-width: 1280px; margin: 0 auto; padding: 84px 24px 56px; }
   .wb-hero { display:flex; justify-content:space-between; align-items:flex-end; gap:24px; margin-bottom:24px; }
@@ -19,6 +19,23 @@
   .meta-label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
   .meta-value { font-size:22px; font-weight:700; color:var(--text); }
   .wb-grid { display:grid; grid-template-columns:1.05fr .95fr; gap:18px; align-items:start; }
+  .wb-grid.wb-grid-3 { grid-template-columns:minmax(0,1fr) minmax(0,.9fr) minmax(300px,.85fr); }
+  @media (max-width:1280px) { .wb-grid.wb-grid-3 { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .wb-agent-card { grid-column:1 / -1; } }
+  /* Agent column: fixed height so it works at laptop height; the history scrolls. */
+  .wb-agent-card { display:flex; flex-direction:column; height:min(72vh, 760px); min-height:420px; }
+  .wb-agent-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+  .wb-agent-meta { font-size:11px; color:var(--text-dim); display:flex; gap:10px; flex-wrap:wrap; }
+  .wb-agent-meta .warn { color:var(--red); font-weight:700; }
+  .wb-agent-history { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:4px 2px; }
+  .wb-msg { max-width:96%; border-radius:12px; padding:9px 12px; font-size:13px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+  .wb-msg.user { align-self:flex-end; background:rgba(var(--accent-rgb), .16); border:1px solid rgba(var(--accent-rgb), .35); }
+  .wb-msg.assistant { align-self:flex-start; background:var(--surface2); border:1px solid var(--border); }
+  .wb-msg.note { align-self:center; font-size:11px; color:var(--text-dim); background:transparent; border:1px dashed var(--border2); }
+  .wb-msg.error { align-self:center; font-size:12px; color:var(--red); border:1px solid rgba(255,79,79,.4); }
+  .wb-agent-empty { margin:auto; text-align:center; color:var(--text-dim); font-size:13px; padding:20px; }
+  .wb-agent-input { display:flex; gap:8px; margin-top:10px; align-items:flex-end; }
+  .wb-agent-input textarea { flex:1 1 auto; min-height:44px; max-height:160px; resize:vertical; }
+  .wb-agent-clear { font-size:11px; }
   .wb-card { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:22px; box-shadow:0 12px 36px rgba(0,0,0,.14); }
   .wb-card h2 { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color: var(--accent-text); margin:0 0 16px; }
   .wb-form-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:14px; }
@@ -125,7 +142,7 @@
     </div>
   </section>
 
-  <section class="wb-grid">
+  <section class="wb-grid wb-grid-3">
     <div class="wb-card">
       <h2>Structured Brief</h2>
       <div class="wb-form-grid">
@@ -197,6 +214,20 @@
     <div class="wb-card">
       <h2>Generated Plan</h2>
       <div id="planPanel" class="wb-plan-empty">Choose a task, describe the brief, and build a routed prompt plan.</div>
+    </div>
+
+    <div class="wb-card wb-agent-card" id="agentCard">
+      <div class="wb-agent-head">
+        <h2 style="margin:0">Agent</h2>
+        <div class="wb-agent-meta" id="agentMeta"></div>
+        <button class="wb-btn wb-btn-tertiary wb-agent-clear" id="agentClearBtn" onclick="agentClear()" title="Forget this project's conversation">Clear</button>
+      </div>
+      <div class="wb-agent-history" id="agentHistory"><div class="wb-agent-empty" id="agentEmpty">Loading\u2026</div></div>
+      <div class="wb-agent-input">
+        <textarea class="wb-textarea" id="agentInput" rows="2" placeholder="Ask about the film, or ask for shots, a prompt, a check\u2026"></textarea>
+        <button class="wb-btn wb-btn-primary" id="agentSendBtn" onclick="agentSend()">Send</button>
+      </div>
+      <div class="wb-note" id="agentFoot">It reads everything and proposes; it writes nothing. Anything it suggests is text for you to act on.</div>
     </div>
   </section>
 
@@ -301,6 +332,95 @@ function applyScopeToBrief(detail) {
 }
 window.addEventListener('asset-meta-change', (event) => applyScopeToBrief(event.detail));
 document.addEventListener('DOMContentLoaded', () => applyScopeToBrief(null));
+
+// ---- Workbench agent (Task 14): a conversation that reads the project and writes nothing ----
+let agentStatus = null;
+let agentProjectId = '';
+let agentBusy = false;
+function agentProject() {
+  const record = typeof getSelectedProjectRecord === 'function' ? getSelectedProjectRecord() : null;
+  return record && record.type === 'film' ? record : null;
+}
+function agentSelectedSceneId() {
+  const record = agentProject();
+  try { return record ? (localStorage.getItem('ds_selected_scene:' + record.id) || '') : ''; } catch (e) { return ''; }
+}
+function agentNote(text, cls = 'note') {
+  const el = document.createElement('div'); el.className = 'wb-msg ' + cls; el.textContent = text;
+  byId('agentHistory').appendChild(el); agentScroll();
+}
+function agentBubble(role, text) {
+  const el = document.createElement('div'); el.className = 'wb-msg ' + role; el.textContent = text;
+  byId('agentHistory').appendChild(el); agentScroll();
+}
+function agentScroll() { const h = byId('agentHistory'); h.scrollTop = h.scrollHeight; }
+function agentSetMeta(historyTokens, digestTokens, truncations) {
+  const warn = agentStatus ? agentStatus.history_warn_tokens : 20000;
+  const parts = [];
+  if (agentStatus && agentStatus.model) parts.push(agentStatus.model);
+  if (digestTokens != null) parts.push(`digest ~${digestTokens.toLocaleString()} tok`);
+  if (historyTokens != null) parts.push(`<span class="${historyTokens >= warn ? 'warn' : ''}">history ~${historyTokens.toLocaleString()} tok${historyTokens >= warn ? ' \u2014 long; each turn resends it, consider Clear' : ''}</span>`);
+  byId('agentMeta').innerHTML = parts.join(' \u00b7 ');
+}
+function agentSetEnabled(on, reason) {
+  byId('agentInput').disabled = !on; byId('agentSendBtn').disabled = !on; byId('agentClearBtn').disabled = !on;
+  if (!on) { byId('agentHistory').innerHTML = `<div class="wb-agent-empty">${escapeHtml(reason)}</div>`; byId('agentMeta').innerHTML = ''; }
+}
+async function agentLoad() {
+  const record = agentProject();
+  agentProjectId = record ? String(record.id) : '';
+  try {
+    const r = await fetch('/api/agent/status'); agentStatus = await r.json();
+  } catch (e) { agentStatus = { has_key: false }; }
+  if (!record) { agentSetEnabled(false, 'Select a film project in the scope bar. The agent reads that project.'); return; }
+  if (!agentStatus.has_key) { agentSetEnabled(false, 'No OpenAI API key is set. Add one in Settings to use the agent. Nothing else happens until then.'); return; }
+  agentSetEnabled(true);
+  const h = byId('agentHistory'); h.innerHTML = '';
+  try {
+    const resp = await fetch('/api/agent/history?project_id=' + encodeURIComponent(record.id));
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || 'Could not load history');
+    if (!data.messages.length) h.innerHTML = `<div class="wb-agent-empty">Nothing yet. ${agentStatus.has_instructions ? '' : 'Tip: your Agent instructions in Settings are empty; the agent only has the project and the framing. '}Ask about ${escapeHtml(record.name)}.</div>`;
+    data.messages.forEach(m => {
+      if (m.role === 'assistant' && m.meta && Array.isArray(m.meta.truncations) && m.meta.truncations.length) agentNote('Context left out for size: ' + m.meta.truncations.join('; '));
+      agentBubble(m.role, m.content);
+    });
+    agentSetMeta(data.history_tokens, null, null);
+  } catch (e) { agentNote(e.message || 'Could not load history', 'error'); }
+}
+async function agentSend() {
+  const record = agentProject();
+  const text = byId('agentInput').value.trim();
+  if (!record || !text || agentBusy) return;
+  agentBusy = true; byId('agentSendBtn').disabled = true; byId('agentSendBtn').textContent = 'Thinking\u2026';
+  const empty = byId('agentHistory').querySelector('.wb-agent-empty'); if (empty) empty.remove();
+  agentBubble('user', text); byId('agentInput').value = '';
+  try {
+    const resp = await fetch('/api/agent/message', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: record.id, message: text, scene_id: agentSelectedSceneId() }) });
+    const data = await resp.json();
+    if (data.digest_info && data.digest_info.truncations && data.digest_info.truncations.length) agentNote('Context left out for size: ' + data.digest_info.truncations.join('; '));
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'The agent did not answer');
+    agentBubble('assistant', data.reply.content);
+    agentSetMeta(data.history_tokens, data.digest_info.tokens, data.digest_info.truncations);
+  } catch (e) {
+    agentNote(e.message || 'Request failed', 'error');
+  } finally {
+    agentBusy = false; byId('agentSendBtn').disabled = false; byId('agentSendBtn').textContent = 'Send';
+  }
+}
+async function agentClear() {
+  const record = agentProject();
+  if (!record) return;
+  const btn = byId('agentClearBtn');
+  if (btn.dataset.armed !== '1') { btn.dataset.armed = '1'; btn.textContent = 'Sure?'; setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Clear'; }, 2500); return; }
+  btn.dataset.armed = ''; btn.textContent = 'Clear';
+  await fetch('/api/agent/history?project_id=' + encodeURIComponent(record.id), { method: 'DELETE' });
+  agentLoad();
+}
+byId('agentInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); agentSend(); } });
+window.addEventListener('asset-meta-change', () => { const record = agentProject(); if ((record ? String(record.id) : '') !== agentProjectId) agentLoad(); });
+document.addEventListener('DOMContentLoaded', agentLoad);
 
 function clearBrief() {
   ['clientName','projectName','objective','subjectSummary','vibe','constraintsSummary','filmScene','filmTreatment'].forEach(id => byId(id).value = '');

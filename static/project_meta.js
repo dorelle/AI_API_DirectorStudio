@@ -514,6 +514,10 @@
       const el = document.getElementById(id);
       if (el) el.value = record && settings[key] != null ? String(settings[key]) : "";
     });
+    const playbook = document.getElementById("projectModalPlaybook");
+    if (playbook) playbook.value = record ? String(record.playbook || "") : "";
+    const playbookInfo = document.getElementById("projectModalPlaybookInfo");
+    if (playbookInfo) playbookInfo.textContent = record && record.playbook ? `${String(record.playbook).length} characters` : "";
     const title = document.getElementById("projectModalTitle");
     if (title) title.textContent = record ? "Edit Project" : "New Project";
     const saveBtn = document.getElementById("projectModalSave");
@@ -544,6 +548,7 @@
       Object.entries(FILM_SETTING_INPUTS).forEach(([key, id]) => {
         body.settings[key] = document.getElementById(id)?.value || "";
       });
+      body.playbook = document.getElementById("projectModalPlaybook")?.value ?? "";   // as written
     }
     if (!String(body.name).trim()) {
       setProjectModalError("Project name is required.");
@@ -587,6 +592,19 @@
     document.getElementById("projectModalSave")?.addEventListener("click", saveProjectModal);
     document.getElementById("projectModalType")?.addEventListener("change", syncProjectModalType);
     bindModalClientSuggestions();
+    document.getElementById("projectModalPlaybookFile")?.addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const area = document.getElementById("projectModalPlaybook");
+        if (area) area.value = String(reader.result || "");
+        const info = document.getElementById("projectModalPlaybookInfo");
+        if (info) info.textContent = `${file.name} \u00b7 ${String(reader.result || "").length} characters`;
+      };
+      reader.readAsText(file);
+      event.target.value = "";
+    });
     overlay.addEventListener("keydown", (event) => {
       if (event.key === "Escape") closeProjectModal();
       if (event.key === "Enter" && event.target?.tagName === "INPUT") {

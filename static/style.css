@@ -10064,3 +10064,13 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .ds-cast-form-id { display: flex; align-items: center; gap: 10px; }
 .ds-chip.is-cast { border-color: rgba(var(--accent-rgb), 0.5); }
 .ds-chip.is-cast img { border-radius: 50%; }
+
+/* ---- Task 14: playbook in the project modal ---- */
+.project-modal-box { width: min(760px, 100%); }
+.project-modal-playbook { grid-column: 1 / -1; }
+.project-modal-playbook-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.project-modal-upload { cursor: pointer; }
+.project-modal-playbook-text { min-height: 220px; max-height: 45vh; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; resize: vertical; white-space: pre-wrap; }
+
+.agent-instructions { width: 100%; min-height: 200px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); color: var(--text); font-size: 13px; line-height: 1.5; padding: 10px 12px; resize: vertical; font-family: inherit; }
+.agent-instructions:focus { outline: none; border-color: var(--accent); }
