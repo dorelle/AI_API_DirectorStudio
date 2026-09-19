@@ -6,6 +6,11 @@
     sections: "ds_shot_sections",
     selected: "ds_selected_shot",
   };
+  const REFERENCE_ROLES = ["unassigned", "edit_target", "character", "garment", "environment", "prop", "style"];
+  const ROLE_LABELS = { unassigned: "unassigned", edit_target: "edit target", character: "character", garment: "garment", environment: "environment", prop: "prop", style: "style" };
+  const refOf = (entry) => (entry && typeof entry === "object") ? String(entry.ref || "") : String(entry || "");
+  const roleOf = (entry) => (entry && typeof entry === "object" && REFERENCE_ROLES.includes(entry.role)) ? entry.role : "unassigned";
+  const asEntry = (entry) => ({ ref: refOf(entry), role: roleOf(entry) });
   const STATUS_LABELS = { empty: "Empty", queued: "Queued", rendering: "Rendering", done: "Done", rejected: "Rejected", failed: "Failed" };
   const FIELD_GROUPS = [
     { key: "timing", label: "Timing", fields: [
@@ -840,11 +845,15 @@
     const values = Array.isArray(shot[group.list]) ? shot[group.list] : [];
     const locked = Array.isArray(shot.locked_fields) && shot.locked_fields.includes(group.list);
     const chips = values.map((value, index) => {
-      const thumb = attachmentThumb(group.list, value);
-      return `<div class="ds-chip${thumb.missing ? " is-missing" : ""}" draggable="true" data-list="${group.list}" data-index="${index}" title="${esc(thumb.label)}${thumb.missing ? " (not found in Elements)" : ""}">
+      const thumb = attachmentThumb(group.list, refOf(value));
+      const role = roleOf(value);
+      return `<div class="ds-chip${thumb.missing ? " is-missing" : ""} role-${role}" draggable="true" data-list="${group.list}" data-index="${index}" title="${esc(thumb.label)}${thumb.missing ? " (not found in Elements)" : ""}">
         <span class="ds-chip-pos">${index + 1}</span>
         ${thumb.url ? `<img src="${esc(thumb.url)}" alt="" draggable="false">` : `<span class="ds-chip-noimg"></span>`}
-        <span class="ds-chip-label">${esc(thumb.label)}</span>
+        <span class="ds-chip-text">
+          <span class="ds-chip-label">${esc(thumb.label)}</span>
+          <button type="button" class="ds-chip-role role-${role}" data-role-for="${index}" title="Role: ${esc(ROLE_LABELS[role])} \u2014 click to change">${esc(ROLE_LABELS[role])}</button>
+        </span>
         <button type="button" class="ds-chip-remove" data-remove="${index}" title="Remove">&times;</button>
       </div>`;
     }).join("");
@@ -874,9 +883,15 @@
       container.querySelectorAll("[data-remove]").forEach((button) => {
         button.addEventListener("click", (event) => {
           event.stopPropagation();
-          const values = (shot[listKey] || []).slice();
+          const values = (shot[listKey] || []).map(asEntry);
           values.splice(Number(button.dataset.remove), 1);
           saveAttachmentList(shot.id, listKey, values);
+        });
+      });
+      container.querySelectorAll("[data-role-for]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          openRoleMenu(shot, listKey, Number(button.dataset.roleFor), button);
         });
       });
       container.querySelectorAll(".ds-chip").forEach((chip) => {
@@ -906,16 +921,55 @@
           event.preventDefault();
           const rect = chip.getBoundingClientRect();
           const before = event.clientX < rect.left + rect.width / 2;
-          const values = (shot[listKey] || []).slice();
+          const values = (shot[listKey] || []).map(asEntry);
           const [moved] = values.splice(attachmentDrag.index, 1);
-          let target = values.indexOf(shot[listKey][index]);
-          if (target < 0) target = index;
+          let target = index - (attachmentDrag.index < index ? 1 : 0);
           values.splice(before ? target : target + 1, 0, moved);
           saveAttachmentList(shot.id, listKey, values);
         });
       });
     });
   }
+
+  function closeRoleMenus() {
+    document.querySelectorAll(".ds-role-menu").forEach((menu) => menu.remove());
+  }
+
+  function openRoleMenu(shot, listKey, index, anchor) {
+    closeRoleMenus();
+    const current = roleOf((shot[listKey] || [])[index]);
+    const menu = document.createElement("div");
+    menu.className = "ds-role-menu";
+    menu.innerHTML = REFERENCE_ROLES.map((role) => `<button type="button" class="ds-role-option role-${role}${role === current ? " is-current" : ""}" data-role="${role}">${esc(ROLE_LABELS[role])}${role === "edit_target" ? '<span class="ds-role-note">one per shot</span>' : ""}</button>`).join("");
+    menu.addEventListener("click", (event) => {
+      const option = event.target.closest("[data-role]");
+      if (!option) return;
+      event.stopPropagation();
+      closeRoleMenus();
+      setAttachmentRole(shot, listKey, index, option.dataset.role);
+    });
+    anchor.closest(".ds-chip").appendChild(menu);
+    window.setTimeout(() => document.addEventListener("pointerdown", (event) => { if (!event.target.closest(".ds-role-menu")) closeRoleMenus(); }, { once: true }), 0);
+  }
+
+  function setAttachmentRole(shot, listKey, index, role) {
+    // Role is a property of the attachment; position is untouched. edit_target is unique across both lists.
+    const values = (shot[listKey] || []).map(asEntry);
+    if (!values[index]) return;
+    const displaced = [];
+    if (role === "edit_target") {
+      SHOT_LIST_KEYS.forEach((key) => {
+        (shot[key] || []).forEach((entry, i) => {
+          if (roleOf(entry) === "edit_target" && !(key === listKey && i === index)) displaced.push(attachmentThumb(key, refOf(entry)).label);
+        });
+      });
+    }
+    values[index].role = role;
+    saveAttachmentList(shot.id, listKey, values).then(() => {
+      if (displaced.length) setStatusLine(`Edit target moved from ${displaced.join(", ")} to ${attachmentThumb(listKey, values[index].ref).label}.`, "success");
+    });
+  }
+  const SHOT_LIST_KEYS = ["elements", "reference_assets"];
 
   async function saveAttachmentList(shotId, listKey, values) {
     const shot = findShot(shotId);
@@ -940,8 +994,8 @@
     if (!shot || !Array.isArray(assets) || !assets.length) return;
     if (!elementCatalog) elementCatalog = {};
     assets.forEach((asset) => { if (asset && asset.id) elementCatalog[String(asset.id)] = asset; });
-    const values = (shot.elements || []).slice();
-    assets.forEach((asset) => { const id = String(asset.id || ""); if (id && !values.includes(id)) values.push(id); });
+    const values = (shot.elements || []).map(asEntry);
+    assets.forEach((asset) => { const id = String(asset.id || ""); if (id && !values.some((entry) => entry.ref === id)) values.push({ ref: id, role: "unassigned" }); });
     saveAttachmentList(shot.id, "elements", values);
   }
 
@@ -950,8 +1004,8 @@
     pendingAttachShotId = "";
     const shot = findShot(shotId);
     if (!shot || !Array.isArray(urls) || !urls.length) return;
-    const values = (shot.reference_assets || []).slice();
-    urls.forEach((url) => { const path = String(url || "").trim(); if (path && !values.includes(path)) values.push(path); });
+    const values = (shot.reference_assets || []).map(asEntry);
+    urls.forEach((url) => { const path = String(url || "").trim(); if (path && !values.some((entry) => entry.ref === path)) values.push({ ref: path, role: "unassigned" }); });
     saveAttachmentList(shot.id, "reference_assets", values);
   }
 

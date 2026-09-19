@@ -2451,6 +2451,8 @@ SHOT_TEXT_FIELDS = (
 )
 # Ordered JSON arrays of ids/paths. Order is the reference order providers see.
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
+# Task 08: what each attached reference is for. Starting vocabulary; the user owns this list.
+REFERENCE_ROLES = ("unassigned", "edit_target", "character", "garment", "environment", "prop", "style")
 SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields")
 SHOT_SORT_STEP = 10
 
@@ -2463,6 +2465,9 @@ def shot_row_to_dict(row) -> dict:
         except json.JSONDecodeError:
             value = fallback
         item[key] = value if isinstance(value, list) else fallback
+    # Old rows hold plain strings; read them as unassigned. Nothing is written back here.
+    for key in SHOT_LIST_FIELDS:
+        item[key] = [_reference_entry(value) for value in item[key] if _reference_entry(value)]
     item["chain_from_previous"] = bool(item.get("chain_from_previous"))
     return item
 
@@ -2559,14 +2564,62 @@ def _normalize_shot_movement(raw) -> str:
     return json.dumps(cleaned[:3], ensure_ascii=False)
 
 
+def _reference_entry(value) -> dict | None:
+    """One attachment as {ref, role}. Accepts the old plain-string shape (role unassigned)."""
+    if isinstance(value, dict):
+        ref = str(value.get("ref") or value.get("id") or value.get("path") or value.get("url") or "").strip()
+        role = str(value.get("role") or "unassigned").strip().lower()
+    else:
+        ref = str(value or "").strip()
+        role = "unassigned"
+    if not ref:
+        return None
+    if role not in REFERENCE_ROLES:
+        role = "unassigned"
+    return {"ref": ref, "role": role}
+
+
 def _normalize_shot_id_list(raw) -> str:
     values = raw if isinstance(raw, list) else []
     cleaned = []
+    seen = set()
     for value in values:
-        text = str(value or "").strip()
-        if text and text not in cleaned:
-            cleaned.append(text)
+        entry = _reference_entry(value)
+        if entry and entry["ref"] not in seen:
+            seen.add(entry["ref"])
+            cleaned.append(entry)
     return json.dumps(cleaned, ensure_ascii=False)
+
+
+def _enforce_single_edit_target(existing: dict, updates: dict) -> None:
+    """At most one edit_target per shot across both arrays. The list being written wins:
+    its last edit_target is kept; every other edit_target (same list or the other one) is
+    cleared to unassigned. Order is never touched."""
+    written = [key for key in SHOT_LIST_FIELDS if key in updates]
+    if not written:
+        return
+    lists = {}
+    for key in SHOT_LIST_FIELDS:
+        raw = updates[key] if key in updates else json.dumps(existing.get(key) or [], ensure_ascii=False)
+        try:
+            lists[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            lists[key] = []
+    keeper = None
+    for key in written:
+        for index, entry in enumerate(lists[key]):
+            if entry.get("role") == "edit_target":
+                keeper = (key, index)
+    if keeper is None:
+        return
+    changed = set()
+    for key in SHOT_LIST_FIELDS:
+        for index, entry in enumerate(lists[key]):
+            if entry.get("role") == "edit_target" and (key, index) != keeper:
+                entry["role"] = "unassigned"
+                changed.add(key)
+    for key in changed | set(written):
+        updates[key] = json.dumps(lists[key], ensure_ascii=False)
 
 
 def _normalize_shot_locked_fields(raw) -> str:
@@ -2667,6 +2720,7 @@ def update_shot(shot_id, body: dict) -> dict:
     if not existing:
         raise LookupError("Shot not found")
     updates = _shot_updates_from_body(body)
+    _enforce_single_edit_target(existing, updates)
     # slug, sort_order, project_id are never writable here
     if updates:
         conn = get_db_connection()
@@ -2885,14 +2939,16 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
 
     # References in array order: elements first, then reference assets.
     reference_urls: list[tuple[str, str]] = []
-    for element_id in shot.get("elements") or []:
+    for entry in shot.get("elements") or []:
+        element_id = entry["ref"] if isinstance(entry, dict) else str(entry)
         url = resolve_element_primary_image_url(element_id)
         if url:
             reference_urls.append((url, f"element-{element_id}"))
         else:
             warnings.append(f"Element '{element_id}' has no image and was skipped.")
-    for index, url in enumerate(shot.get("reference_assets") or []):
-        reference_urls.append((str(url), f"reference-{index + 1}"))
+    for index, entry in enumerate(shot.get("reference_assets") or []):
+        url = entry["ref"] if isinstance(entry, dict) else str(entry)
+        reference_urls.append((url, f"reference-{index + 1}"))
 
     first_frame = str(shot.get("first_frame") or "").strip()
     last_frame = str(shot.get("last_frame") or "").strip()

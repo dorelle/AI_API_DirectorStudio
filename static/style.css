@@ -9818,3 +9818,60 @@ body.video-prompt-resizing .video-prompt-resizer::after,
 .ds-take-actions { display: flex; gap: 6px; padding: 6px 8px 8px; }
 .ds-take-actions .ds-card-btn { background: var(--surface2); border-color: var(--border2); color: var(--text); }
 .ds-take-delete:hover { border-color: var(--red) !important; color: var(--red); }
+
+/* ---- Director Studio: reference roles on chips (Task 08) ---- */
+.ds-chip { max-width: 260px; }
+.ds-chip-text { display: grid; gap: 2px; min-width: 0; }
+.ds-chip-role {
+  justify-self: start;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.ds-chip-role.role-unassigned { color: var(--text-muted); border-style: dashed; font-weight: 600; }
+.ds-chip-role.role-edit_target { color: #fff; background: var(--accent); border-color: var(--accent); }
+.ds-chip.role-edit_target { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.35); }
+.ds-chip.role-unassigned { border-style: dashed; }
+.ds-chip-role:hover { border-color: var(--accent); }
+
+.ds-role-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 130;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--surface2);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+  display: grid;
+  gap: 2px;
+}
+.ds-role-option {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ds-role-option:hover { background: rgba(var(--accent-rgb), 0.14); }
+.ds-role-option.is-current { color: var(--accent-text); }
+.ds-role-option.role-unassigned { color: var(--text-dim); }
+.ds-role-option.role-edit_target { font-weight: 800; }
+.ds-role-note { font-size: 9px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
