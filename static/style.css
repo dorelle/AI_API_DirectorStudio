@@ -9723,3 +9723,98 @@ body.video-prompt-resizing .video-prompt-resizer::after,
   gap: 8px;
 }
 .ds-attach-hint { font-size: 10px; color: var(--text-muted); }
+
+/* ---- Director Studio: takes, render state, approval (Task 07) ---- */
+.ds-shot-status[data-status="approved"],
+.ds-card-status[data-status="approved"] { background: #f5c542; }
+.ds-shot-status[data-status="failed"],
+.ds-card-status[data-status="failed"] { background: var(--red); }
+
+.ds-card.is-approved { border-color: #f5c542; box-shadow: 0 0 0 1px rgba(245, 197, 66, 0.5); }
+.ds-card.is-approved.is-selected { box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35), 0 0 0 4px rgba(245, 197, 66, 0.45); }
+.ds-card-approved {
+  position: absolute;
+  left: 10px;
+  top: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f5c542;
+  color: #1a1200;
+  font-size: 12px;
+  font-weight: 900;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.ds-card-frame video { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; background: #000; }
+.ds-card-rendering {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  z-index: 2;
+}
+.ds-card-rendering .spinner,
+.ds-take-busy .spinner { width: 14px; height: 14px; border-width: 2px; }
+.ds-card.is-rendering .ds-card-actions { display: none; }
+.ds-card-btn-render { border-color: rgba(var(--accent-rgb), 0.8); background: rgba(var(--accent-rgb), 0.55); }
+
+.ds-render-btn { margin-left: auto; border-color: var(--accent); color: var(--text); }
+.ds-render-btn:disabled { opacity: 0.6; cursor: wait; }
+
+.ds-takes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.ds-take {
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.ds-take.is-approved { border-color: #f5c542; }
+.ds-take.is-failed { border-color: rgba(255, 79, 79, 0.5); }
+.ds-take-thumb {
+  position: relative;
+  height: 110px;
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.ds-take-thumb img, .ds-take-thumb video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.ds-take-error {
+  padding: 10px;
+  font-size: 11px;
+  color: var(--red);
+  line-height: 1.35;
+  overflow: auto;
+  max-height: 100%;
+}
+.ds-take-busy { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.ds-take-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.ds-take-cost { color: var(--text); font-weight: 700; }
+.ds-take-engine { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-take-actions { display: flex; gap: 6px; padding: 6px 8px 8px; }
+.ds-take-actions .ds-card-btn { background: var(--surface2); border-color: var(--border2); color: var(--text); }
+.ds-take-delete:hover { border-color: var(--red) !important; color: var(--red); }

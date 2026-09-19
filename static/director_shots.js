@@ -6,7 +6,7 @@
     sections: "ds_shot_sections",
     selected: "ds_selected_shot",
   };
-  const STATUS_LABELS = { empty: "Empty", queued: "Queued", rendering: "Rendering", done: "Done", rejected: "Rejected" };
+  const STATUS_LABELS = { empty: "Empty", queued: "Queued", rendering: "Rendering", done: "Done", rejected: "Rejected", failed: "Failed" };
   const FIELD_GROUPS = [
     { key: "timing", label: "Timing", fields: [
       { key: "duration_seconds", label: "Duration (seconds)", type: "number" },
@@ -33,11 +33,12 @@
       { key: "first_frame", label: "First frame" },
       { key: "last_frame", label: "Last frame" },
       { key: "chain_from_previous", label: "Chain from previous shot's last frame", type: "checkbox" },
-      { key: "engine", label: "Engine" },
+      { key: "engine", label: "Engine (video model)", type: "engine" },
     ] },
     // Ordered attachments: what the shot sends besides the prompt. Order = provider reference order.
     { key: "elements", label: "Elements", list: "elements", addLabel: "+ Add elements", empty: "No talent attached." },
     { key: "assets", label: "Assets", list: "reference_assets", addLabel: "+ Add references", empty: "No reference images attached." },
+    { key: "takes", label: "Takes", takes: true },
     { key: "notes", label: "Notes", fields: [
       { key: "status", label: "Status", type: "select", options: Object.keys(STATUS_LABELS) },
       { key: "note", label: "Note", type: "textarea" },
@@ -51,6 +52,10 @@
   let dragId = "";
   let stripDragId = "";
   let stripPickShotId = "";
+  let videoModels = null;          // id -> info from /api/video-models-info
+  let videoModelsPromise = null;
+  const takesCache = {};           // shotId -> takes[]
+  const activeRenders = {};        // shotId -> jobId being polled
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -151,8 +156,8 @@
     const list = $("dsShotList");
     if (!list) return;
     const rows = shots.map((shot) => `
-      <div class="ds-shot-row${String(shot.id) === String(selectedId) ? " is-selected" : ""}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} · ${esc(STATUS_LABELS[shot.status] || shot.status)}">
-        <span class="ds-shot-status" data-status="${esc(shot.status)}" aria-label="${esc(STATUS_LABELS[shot.status] || shot.status)}"></span>
+      <div class="ds-shot-row${String(shot.id) === String(selectedId) ? " is-selected" : ""}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}${shot.takes && shot.takes.approved ? " \u00b7 approved" : ""}">
+        <span class="ds-shot-status" data-status="${esc(listStatus(shot))}" aria-label="${esc(listStatus(shot))}"></span>
         <span class="ds-shot-slug">${esc(shot.slug)}</span>
         <span class="ds-shot-scene">${esc(shot.scene || "")}</span>
         <span class="ds-shot-row-actions">
@@ -297,6 +302,30 @@
     }
   }
 
+  function shotVisual(shot) {
+    // Card image priority: approved take, else latest done take, else first frame, else text.
+    const takes = shot.takes || {};
+    const pick = (take) => take ? { kind: "take", take, poster: take.poster_path || "", video: take.asset_path || "" } : null;
+    if (takes.approved && takes.approved.asset_path) return { ...pick(takes.approved), approved: true };
+    if (takes.latest_done && takes.latest_done.asset_path) return { ...pick(takes.latest_done), approved: false };
+    const url = frameUrl(shot);
+    if (url) return { kind: "frame", url, approved: false };
+    return { kind: "none", approved: false };
+  }
+
+  function visualMarkup(visual, alt) {
+    if (visual.kind === "take") {
+      if (visual.poster) return `<img src="${esc(visual.poster)}" alt="${esc(alt)}" draggable="false">`;
+      return `<video src="${esc(visual.video)}#t=0.1" muted playsinline preload="auto" draggable="false"></video>`;
+    }
+    if (visual.kind === "frame") return `<img src="${esc(visual.url)}" alt="${esc(alt)}" draggable="false">`;
+    return "";
+  }
+
+  function listStatus(shot) {
+    return (shot.takes && shot.takes.approved) ? "approved" : shot.status;
+  }
+
   function frameUrl(shot) {
     const value = String(shot.first_frame || "").trim();
     if (!value) return "";
@@ -309,22 +338,30 @@
     if (!strip || strip.style.display === "none") return;
     const cards = shots.map((shot, index) => {
       const url = frameUrl(shot);
+      const visual = shotVisual(shot);
+      const hasVisual = visual.kind !== "none";
+      const rendering = Boolean(shot.takes && shot.takes.rendering) || shot.status === "queued" || shot.status === "rendering";
       const selected = String(shot.id) === String(selectedId);
-      const frame = url
-        ? `<img src="${esc(url)}" alt="${esc(shot.slug)} first frame" draggable="false">`
+      const frame = hasVisual
+        ? visualMarkup(visual, `${shot.slug} ${visual.kind === "take" ? "take" : "first frame"}`)
         : `<div class="ds-card-placeholder"><span class="ds-shot-slug">${esc(shot.slug)}</span>${esc(shot.scene || "No scene yet")}<span class="ds-card-placeholder-hint">No frame</span></div>`;
-      const actions = url
+      const frameActions = url
         ? `<button type="button" class="ds-card-btn" data-card-action="pick">Replace</button><button type="button" class="ds-card-btn" data-card-action="clear">Clear</button>`
         : `<button type="button" class="ds-card-btn" data-card-action="pick">Pick frame</button>`;
+      const renderAction = rendering
+        ? ""
+        : `<button type="button" class="ds-card-btn ds-card-btn-render" data-card-action="render" title="Render this shot">\u25B6 Render</button>`;
       return `
-      <div class="ds-card${selected ? " is-selected" : ""}${url ? "" : " ds-card-empty"}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}">
+      <div class="ds-card${selected ? " is-selected" : ""}${hasVisual ? "" : " ds-card-empty"}${visual.approved ? " is-approved" : ""}${rendering ? " is-rendering" : ""}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}${visual.approved ? " \u00b7 approved" : ""}">
         <div class="ds-card-frame">
           ${frame}
-          <span class="ds-card-status" data-status="${esc(shot.status)}" aria-label="${esc(STATUS_LABELS[shot.status] || shot.status)}"></span>
+          <span class="ds-card-status" data-status="${esc(listStatus(shot))}" aria-label="${esc(listStatus(shot))}"></span>
           <span class="ds-card-pos">${index + 1}</span>
-          <div class="ds-card-actions">${actions}</div>
+          ${visual.approved ? `<span class="ds-card-approved" title="Approved take">\u2713</span>` : ""}
+          ${rendering ? `<div class="ds-card-rendering"><span class="spinner"></span>Rendering\u2026</div>` : ""}
+          <div class="ds-card-actions">${renderAction}${frameActions}</div>
         </div>
-        ${url ? `<div class="ds-card-foot"><span class="ds-shot-slug">${esc(shot.slug)}</span><span class="ds-shot-scene">${esc(shot.scene || "")}</span></div>` : ""}
+        ${hasVisual ? `<div class="ds-card-foot"><span class="ds-shot-slug">${esc(shot.slug)}</span><span class="ds-shot-scene">${esc(shot.scene || "")}</span></div>` : ""}
       </div>`;
     }).join("");
     strip.innerHTML = `
@@ -363,6 +400,7 @@
           event.stopPropagation();
           if (action.dataset.cardAction === "pick") pickFrame(id);
           if (action.dataset.cardAction === "clear") setFirstFrame(id, "");
+          if (action.dataset.cardAction === "render") renderShot(id);
           return;
         }
         selectShot(id);
@@ -496,6 +534,18 @@
       control = `<textarea class="ds-field-input" data-field="${field.key}" rows="${field.rows || 2}">${esc(value)}</textarea>`;
     } else if (field.type === "checkbox") {
       control = `<label class="ds-field-check"><input type="checkbox" data-field="${field.key}" ${value ? "checked" : ""}> <span>${esc(field.label)}</span></label>`;
+    } else if (field.type === "engine") {
+      const current = String(value || "");
+      const groups = {};
+      Object.entries(videoModels || {}).forEach(([id, info]) => {
+        const provider = String(info.provider_label || info.provider || "other");
+        (groups[provider] = groups[provider] || []).push([id, info]);
+      });
+      const options = Object.keys(groups).sort().map((provider) => `<optgroup label="${esc(provider)}">${groups[provider]
+        .sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])))
+        .map(([id, info]) => `<option value="${esc(id)}" ${id === current ? "selected" : ""}>${esc(info.label || id)}</option>`).join("")}</optgroup>`).join("");
+      const unknown = current && !(videoModels && videoModels[current]) ? `<option value="${esc(current)}" selected>${esc(current)} (unknown)</option>` : "";
+      control = `<select class="ds-field-input" data-field="${field.key}"><option value="" ${current ? "" : "selected"}>Generator's current video model</option>${unknown}${options}</select>`;
     } else if (field.type === "select") {
       control = `<select class="ds-field-input" data-field="${field.key}">${field.options.map((option) => `<option value="${esc(option)}" ${option === value ? "selected" : ""}>${esc(STATUS_LABELS[option] || option)}</option>`).join("")}</select>`;
     } else {
@@ -525,8 +575,8 @@
     const sceneLocked = Array.isArray(shot.locked_fields) && shot.locked_fields.includes("scene");
     const sections = FIELD_GROUPS.map((group) => `
       <details class="ds-section${group.list ? " ds-section-list" : ""}" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
-        <summary>${esc(group.label)}${group.list ? `<span class="ds-section-count">${(shot[group.list] || []).length}</span>` : ""}</summary>
-        ${group.list ? renderAttachmentList(shot, group) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`}
+        <summary>${esc(group.label)}${group.list ? `<span class="ds-section-count">${(shot[group.list] || []).length}</span>` : ""}${group.takes ? `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>` : ""}</summary>
+        ${group.list ? renderAttachmentList(shot, group) : (group.takes ? renderTakesSection(shot) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`)}
       </details>`).join("");
     host.innerHTML = `
       <div class="ds-editor-head">
@@ -538,6 +588,7 @@
         </div>
         <span class="ds-editor-order">#${shots.findIndex((item) => item.id === shot.id) + 1} of ${shots.length}</span>
         <span class="ds-editor-saved" id="dsEditorSaved"></span>
+        <button type="button" class="history-filter-toggle ds-render-btn" id="dsRenderBtn" ${(shot.takes && shot.takes.rendering) ? "disabled" : ""}>${(shot.takes && shot.takes.rendering) ? "Rendering\u2026" : "\u25B6 Render shot"}</button>
       </div>
       <div class="ds-sections">${sections}</div>`;
     host.querySelectorAll("details.ds-section").forEach((details) => {
@@ -551,6 +602,208 @@
     });
     bindAttachmentLists(shot);
     ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
+    ensureVideoModels().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
+    $("dsRenderBtn")?.addEventListener("click", () => renderShot(shot.id));
+    bindTakesSection(shot);
+    loadTakes(shot.id);
+  }
+
+  // ---- takes + render --------------------------------------------------------
+  function ensureVideoModels() {
+    if (videoModels) return Promise.resolve(false);
+    if (!videoModelsPromise) {
+      videoModelsPromise = fetch("/api/video-models-info", { credentials: "same-origin" })
+        .then((response) => response.json())
+        .then((payload) => { videoModels = payload && typeof payload === "object" ? payload : {}; return true; })
+        .catch(() => { videoModels = {}; return false; });
+    }
+    return videoModelsPromise;
+  }
+
+  function formatTakeTime(iso) {
+    const text = String(iso || "");
+    return text ? text.slice(0, 16).replace("T", " ") : "";
+  }
+
+  function renderTakesSection(shot) {
+    const takes = takesCache[String(shot.id)];
+    if (!takes) return `<div class="ds-takes" id="dsTakes"><div class="ds-chip-empty">Loading takes\u2026</div></div>`;
+    if (!takes.length) return `<div class="ds-takes" id="dsTakes"><div class="ds-chip-empty">No takes yet. Render the shot to make one.</div></div>`;
+    const items = takes.map((take) => {
+      const failed = take.status === "failed";
+      const busy = take.status === "queued" || take.status === "rendering";
+      const thumb = failed
+        ? `<div class="ds-take-error">${esc(take.error || "Render failed.")}</div>`
+        : busy
+          ? `<div class="ds-take-busy"><span class="spinner"></span>${esc(STATUS_LABELS[take.status] || take.status)}\u2026</div>`
+          : (take.poster_path
+              ? `<img src="${esc(take.poster_path)}" alt="Take ${take.id}" draggable="false">`
+              : `<video src="${esc(take.asset_path)}#t=0.1" muted playsinline preload="metadata" controls></video>`);
+      const engineLabel = videoModels && videoModels[take.engine] ? videoModels[take.engine].label : take.engine;
+      return `<div class="ds-take${take.approved ? " is-approved" : ""}${failed ? " is-failed" : ""}" data-take="${take.id}">
+        <div class="ds-take-thumb">${thumb}${take.approved ? `<span class="ds-card-approved" title="Approved">\u2713</span>` : ""}</div>
+        <div class="ds-take-meta">
+          <span class="ds-take-cost">$${Number(take.cost || 0).toFixed(2)}</span>
+          <span class="ds-take-engine" title="${esc(take.engine)}">${esc(engineLabel || "\u2014")}</span>
+          <span class="ds-take-time">${esc(formatTakeTime(take.completed_at || take.created_at))}</span>
+        </div>
+        <div class="ds-take-actions">
+          ${(!failed && !busy) ? `<button type="button" class="ds-card-btn" data-take-action="${take.approved ? "unapprove" : "approve"}">${take.approved ? "Unapprove" : "Approve"}</button>` : ""}
+          ${!busy ? `<button type="button" class="ds-card-btn ds-take-delete" data-take-action="delete">Delete</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    return `<div class="ds-takes" id="dsTakes">${items}</div>`;
+  }
+
+  function bindTakesSection(shot) {
+    document.querySelectorAll("#dsTakes [data-take-action]").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const takeId = button.closest("[data-take]")?.dataset.take;
+        const action = button.dataset.takeAction;
+        if (!takeId) return;
+        try {
+          if (action === "approve" || action === "unapprove") {
+            const payload = await api(`/api/takes/${takeId}`, { method: "PATCH", body: { approved: action === "approve" } });
+            applyShotUpdate(payload.shot);
+            flashSaved(action === "approve" ? "Approved" : "Unapproved");
+          } else if (action === "delete") {
+            if (button.dataset.armed !== "1") {
+              button.dataset.armed = "1"; button.textContent = "Sure?";
+              window.setTimeout(() => { button.dataset.armed = ""; button.textContent = "Delete"; }, 2500);
+              return;
+            }
+            const payload = await api(`/api/takes/${takeId}`, { method: "DELETE" });
+            applyShotUpdate(payload.shot);
+          }
+          delete takesCache[String(shot.id)];
+          await loadTakes(shot.id);
+        } catch (error) {
+          setStatusLine(error.message || "Take update failed.", "error");
+        }
+      });
+    });
+  }
+
+  function applyShotUpdate(updated) {
+    if (!updated) return;
+    const index = shots.findIndex((item) => item.id === updated.id);
+    if (index >= 0) shots[index] = updated;
+    renderList();
+  }
+
+  async function loadTakes(shotId) {
+    try {
+      const payload = await api(`/api/shots/${shotId}/takes`);
+      takesCache[String(shotId)] = payload.takes || [];
+    } catch (error) {
+      takesCache[String(shotId)] = [];
+    }
+    if (String(selectedId) === String(shotId)) {
+      const shot = findShot(shotId);
+      const host = $("dsTakes");
+      if (shot && host) {
+        host.outerHTML = renderTakesSection(shot);
+        bindTakesSection(shot);
+        const count = document.querySelector('#dsShotEditor details[data-section="takes"] .ds-section-count');
+        if (count) count.textContent = String((takesCache[String(shotId)] || []).length);
+      }
+    }
+  }
+
+  // Last frame of a rendered take, captured in the browser (the server has no video decoder).
+  function extractLastFrame(url) {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      video.muted = true; video.playsInline = true; video.preload = "auto";
+      video.style.cssText = "position:fixed;left:-9999px;top:0;width:160px;height:90px;opacity:0;pointer-events:none";
+      document.body.appendChild(video);
+      const fail = (message) => { video.remove(); reject(new Error(message)); };
+      const timer = window.setTimeout(() => fail("Timed out reading the approved take."), 30000);
+      video.addEventListener("error", () => { window.clearTimeout(timer); fail("The approved take could not be decoded in this browser."); });
+      let seeked = false;
+      video.addEventListener("loadeddata", () => {
+        if (seeked) return;
+        seeked = true;
+        const duration = isFinite(video.duration) ? video.duration : 0;
+        video.currentTime = Math.max(0, duration - 0.05);
+      });
+      video.addEventListener("seeked", () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          canvas.getContext("2d").drawImage(video, 0, 0);
+          const dataUrl = canvas.toDataURL("image/png");
+          window.clearTimeout(timer);
+          video.remove();
+          resolve({ mime_type: "image/png", data: dataUrl.split(",")[1] || "" });
+        } catch (error) {
+          window.clearTimeout(timer);
+          fail("Could not capture the last frame: " + (error.message || error));
+        }
+      });
+      video.src = url;
+      video.load();
+    });
+  }
+
+  async function renderShot(shotId) {
+    const shot = findShot(shotId);
+    if (!shot || activeRenders[String(shotId)]) return;
+    const body = {};
+    if (typeof window.getCurrentVideoSelection === "function") {
+      try { body.fallbackModel = window.getCurrentVideoSelection().modelId || ""; } catch (e) {}
+    }
+    if (shot.chain_from_previous) {
+      const index = shots.findIndex((item) => item.id === shot.id);
+      const prev = index > 0 ? shots[index - 1] : null;
+      const approved = prev && prev.takes && prev.takes.approved;
+      if (!prev) { setStatusLine("Chain from previous is set, but this is the first shot.", "error"); return; }
+      if (!approved || !approved.asset_path) { setStatusLine(`Chain from previous: ${prev.slug} has no approved take. Approve one first, or turn chaining off.`, "error"); return; }
+      setStatusLine(`Reading the last frame of ${prev.slug}\u2019s approved take\u2026`);
+      try {
+        body.chainStartImage = await extractLastFrame(approved.asset_path);
+      } catch (error) {
+        setStatusLine(error.message || "Could not read the previous take.", "error");
+        return;
+      }
+    }
+    try {
+      const payload = await api(`/api/shots/${shotId}/render`, { method: "POST", body });
+      activeRenders[String(shotId)] = payload.job && payload.job.jobId;
+      applyShotUpdate(payload.shot);
+      if (String(selectedId) === String(shotId)) { delete takesCache[String(shotId)]; renderEditor(); }
+      (payload.warnings || []).forEach((warning) => setStatusLine(warning, "error"));
+      setStatusLine(`${shot.slug}: render started.`, "success");
+      pollRender(shotId, payload.job && payload.job.jobId);
+    } catch (error) {
+      setStatusLine(error.message || "Render failed to start.", "error");
+    }
+  }
+
+  function pollRender(shotId, jobId) {
+    if (!jobId) { delete activeRenders[String(shotId)]; return; }
+    const tick = async () => {
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { credentials: "same-origin", cache: "no-store" });
+        const job = await response.json().catch(() => ({}));
+        if (job && (job.status === "completed" || job.status === "failed")) {
+          // The take row is written right after the job flips; give it a beat.
+          window.setTimeout(async () => {
+            delete activeRenders[String(shotId)];
+            await loadShots();
+            delete takesCache[String(shotId)];
+            if (String(selectedId) === String(shotId)) renderEditor();
+            const shot = findShot(shotId);
+            setStatusLine(job.status === "completed" ? `${shot ? shot.slug : "Shot"}: take ready.` : `${shot ? shot.slug : "Shot"}: render failed \u2014 ${job.error || "see the take"}`, job.status === "completed" ? "success" : "error");
+          }, 600);
+          return;
+        }
+      } catch (error) {}
+      window.setTimeout(tick, 2500);
+    };
+    window.setTimeout(tick, 2500);
   }
 
   // ---- attachments: elements (talent ids) and reference_assets (paths) ---
@@ -784,7 +1037,7 @@
     onScopeChange(null);
   }
 
-  window.directorShots = { reload: loadShots, select: selectShot, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked };
+  window.directorShots = { reload: loadShots, select: selectShot, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked, renderShot };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });

@@ -2231,6 +2231,25 @@ def init_studio_db():
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS takes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shot_id INTEGER NOT NULL,
+            asset_path TEXT NOT NULL DEFAULT '',
+            approved INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0,
+            engine TEXT NOT NULL DEFAULT '',
+            prompt_sent TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'queued',
+            error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            job_id TEXT NOT NULL DEFAULT '',
+            poster_path TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS shot_slug_counters (
             project_id INTEGER PRIMARY KEY,
             next_number INTEGER NOT NULL DEFAULT 1
@@ -2423,7 +2442,7 @@ def apply_project_record_scope(payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Shots (Director Studio, Task 04). Identity lives in slug, order in sort_order.
 # ---------------------------------------------------------------------------
-SHOT_STATUSES = ("empty", "queued", "rendering", "done", "rejected")
+SHOT_STATUSES = ("empty", "queued", "rendering", "done", "rejected", "failed")
 SHOT_TEXT_FIELDS = (
     "scene", "beat_marker", "action_text", "dialogue", "audio_cue",
     "shot_size", "angle", "lens", "aperture", "speed_ramp",
@@ -2448,6 +2467,33 @@ def shot_row_to_dict(row) -> dict:
     return item
 
 
+def attach_take_summaries(conn, shots: list[dict]) -> list[dict]:
+    """Adds `takes` = {approved, latest_done, rendering, count} per shot. Read-only helper."""
+    if not shots:
+        return shots
+    ids = [shot["id"] for shot in shots]
+    marks = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT * FROM takes WHERE shot_id IN ({marks}) ORDER BY id DESC", ids
+    ).fetchall()
+    by_shot: dict[int, dict] = {shot["id"]: {"approved": None, "latest_done": None, "rendering": False, "count": 0} for shot in shots}
+    for row in rows:
+        take = take_row_to_dict(row)
+        summary = by_shot.get(take["shot_id"])
+        if summary is None:
+            continue
+        summary["count"] += 1
+        if take["approved"] and summary["approved"] is None:
+            summary["approved"] = take
+        if take["status"] == "done" and summary["latest_done"] is None:
+            summary["latest_done"] = take
+        if take["status"] in ("queued", "rendering"):
+            summary["rendering"] = True
+    for shot in shots:
+        shot["takes"] = by_shot.get(shot["id"])
+    return shots
+
+
 def fetch_shots(project_id) -> list[dict]:
     try:
         project_id = int(project_id)
@@ -2458,8 +2504,9 @@ def fetch_shots(project_id) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM shots WHERE project_id = ? ORDER BY sort_order ASC, id ASC", (project_id,)
     ).fetchall()
+    shots = attach_take_summaries(conn, [shot_row_to_dict(row) for row in rows])
     conn.close()
-    return [shot_row_to_dict(row) for row in rows]
+    return shots
 
 
 def get_shot(shot_id) -> dict | None:
@@ -2470,8 +2517,18 @@ def get_shot(shot_id) -> dict | None:
     init_studio_db()
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM shots WHERE id = ? LIMIT 1", (shot_id,)).fetchone()
+    shots = attach_take_summaries(conn, [shot_row_to_dict(row)]) if row else []
     conn.close()
-    return shot_row_to_dict(row) if row else None
+    return shots[0] if shots else None
+
+
+def set_shot_status(shot_id, status: str) -> None:
+    if status not in SHOT_STATUSES:
+        return
+    conn = get_db_connection()
+    conn.execute("UPDATE shots SET status = ? WHERE id = ?", (status, int(shot_id)))
+    conn.commit()
+    conn.close()
 
 
 def next_shot_slug(conn, project: dict) -> str:
@@ -2656,6 +2713,343 @@ def reorder_shots(project_id, ordered_ids: list) -> list[dict]:
     conn.commit()
     conn.close()
     return fetch_shots(project["id"])
+
+
+# ---------------------------------------------------------------------------
+# Takes (Director Studio, Task 07). Status = what the system did (on the shot);
+# approved = what the user decided (on one take). Never derived from each other.
+# ---------------------------------------------------------------------------
+TAKE_STATUSES = ("queued", "rendering", "done", "failed")
+
+
+def take_row_to_dict(row) -> dict:
+    item = dict(row)
+    item["approved"] = bool(item.get("approved"))
+    item["cost"] = float(item.get("cost") or 0.0)
+    return item
+
+
+def fetch_takes(shot_id) -> list[dict]:
+    try:
+        shot_id = int(shot_id)
+    except (TypeError, ValueError):
+        return []
+    init_studio_db()
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM takes WHERE shot_id = ? ORDER BY id DESC", (shot_id,)).fetchall()
+    conn.close()
+    return [take_row_to_dict(row) for row in rows]
+
+
+def get_take(take_id) -> dict | None:
+    try:
+        take_id = int(take_id)
+    except (TypeError, ValueError):
+        return None
+    init_studio_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM takes WHERE id = ? LIMIT 1", (take_id,)).fetchone()
+    conn.close()
+    return take_row_to_dict(row) if row else None
+
+
+def create_take(shot_id: int, *, engine: str, prompt_sent: str, job_id: str = "") -> dict:
+    init_studio_db()
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "INSERT INTO takes (shot_id, engine, prompt_sent, status, job_id, created_at) VALUES (?, ?, ?, 'queued', ?, ?)",
+        (int(shot_id), engine, prompt_sent, job_id, utc_now_iso()),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return get_take(new_id)
+
+
+def update_take(take_id, **fields) -> dict | None:
+    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at"}
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if "status" in updates and updates["status"] not in TAKE_STATUSES:
+        raise ValueError("status must be one of " + ", ".join(TAKE_STATUSES))
+    existing = get_take(take_id)
+    if not existing:
+        raise LookupError("Take not found")
+    conn = get_db_connection()
+    if updates.get("approved"):
+        # At most one approved take per shot: approving one clears the others.
+        conn.execute("UPDATE takes SET approved = 0 WHERE shot_id = ? AND id != ?", (existing["shot_id"], existing["id"]))
+        updates["approved"] = 1
+    elif "approved" in updates:
+        updates["approved"] = 0
+    if updates:
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(f"UPDATE takes SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
+    conn.commit()
+    conn.close()
+    return get_take(existing["id"])
+
+
+def delete_take(take_id) -> bool:
+    existing = get_take(take_id)
+    if not existing:
+        return False
+    conn = get_db_connection()
+    conn.execute("DELETE FROM takes WHERE id = ?", (existing["id"],))
+    conn.commit()
+    conn.close()
+    return True
+
+
+ASSET_URL_ROOTS = {
+    "generations": lambda: GENERATIONS_DIR,
+    "loved": lambda: LOVED_DIR,
+    "videos": lambda: VIDEOS_DIR,
+    "reference-archive": lambda: REFERENCE_ARCHIVE_DIR,
+    "reference-render": lambda: REFERENCE_RENDERS_DIR,
+    "reference-mask": lambda: REFERENCE_MASKS_DIR,
+    "elements": lambda: ELEMENTS_DIR,
+}
+
+
+def resolve_asset_url_to_local_path(url: str) -> str:
+    """'/generations/a/b/c.png' -> absolute file under the matching asset root, or ''."""
+    text = str(url or "").strip()
+    if text.startswith("http://") or text.startswith("https://"):
+        text = urlparse(text).path
+    text = unquote(text)
+    parts = [part for part in text.replace("\\", "/").split("/") if part]
+    if len(parts) < 2 or parts[0] not in ASSET_URL_ROOTS:
+        return ""
+    try:
+        return safe_asset_path(ASSET_URL_ROOTS[parts[0]](), "/".join(parts[1:]))
+    except Exception:
+        return ""
+
+
+def load_asset_image_payload(url: str, name: str) -> dict:
+    local_path = resolve_asset_url_to_local_path(url)
+    if not local_path:
+        raise ValueError(f"Reference not found on disk: {url}")
+    ext = os.path.splitext(local_path)[1].lower()
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(ext, "image/png")
+    with open(local_path, "rb") as fh:
+        data = base64.b64encode(fh.read()).decode("ascii")
+    name = os.path.splitext(str(name or "image"))[0] + (ext if ext in (".png", ".jpg", ".jpeg", ".webp") else ".png")
+    return {"mime_type": mime, "data": data, "name": name, "original_url": str(url or "")}
+
+
+def resolve_element_primary_image_url(element_id: str) -> str:
+    """Talent id -> '/elements/<folder>/<primary image>' using the per-talent JSON files."""
+    wanted = str(element_id or "").strip()
+    if not wanted:
+        return ""
+    for folder_name in ELEMENTS_CATEGORIES:
+        folder_path = os.path.join(ELEMENTS_DIR, folder_name)
+        if not os.path.isdir(folder_path):
+            continue
+        for json_path in list_talent_jsons(folder_path):
+            talent = load_talent_json(json_path)
+            if not talent or str(talent.get("id", "")) != wanted:
+                continue
+            images = talent.get("images") or []
+            primary = next((img for img in images if img.get("is_primary")), images[0] if images else None)
+            image_path = str((primary or {}).get("path") or talent.get("image_path") or "").strip()
+            if image_path:
+                return f"/elements/{folder_name}/{image_path}"
+    return ""
+
+
+def previous_shot(shot: dict) -> dict | None:
+    rows = fetch_shots(shot["project_id"])
+    for index, row in enumerate(rows):
+        if row["id"] == shot["id"]:
+            return rows[index - 1] if index > 0 else None
+    return None
+
+
+def build_shot_render_payload(shot: dict, project: dict, body: dict | None = None) -> tuple[dict, list[str]]:
+    """Assemble the same payload a Generator video run sends, from the shot row.
+    Returns (payload, warnings). Raises ValueError when the shot cannot render."""
+    body = body or {}
+    warnings: list[str] = []
+    engine = str(shot.get("engine") or "").strip()
+    fallback = str(body.get("fallbackModel") or "").strip()
+    if engine and engine not in VIDEO_MODELS_INFO:
+        warnings.append(f"Engine '{engine}' is not a known video model; using the Generator's current model.")
+        engine = ""
+    model_id = engine or (fallback if fallback in VIDEO_MODELS_INFO else "")
+    if not model_id:
+        raise ValueError("No engine set on the shot and no video model selected in the Generator.")
+    model_info = VIDEO_MODELS_INFO[model_id]
+    modes = [str(mode).strip().lower() for mode in (model_info.get("input_modes") or [])]
+
+    # References in array order: elements first, then reference assets.
+    reference_urls: list[tuple[str, str]] = []
+    for element_id in shot.get("elements") or []:
+        url = resolve_element_primary_image_url(element_id)
+        if url:
+            reference_urls.append((url, f"element-{element_id}"))
+        else:
+            warnings.append(f"Element '{element_id}' has no image and was skipped.")
+    for index, url in enumerate(shot.get("reference_assets") or []):
+        reference_urls.append((str(url), f"reference-{index + 1}"))
+
+    first_frame = str(shot.get("first_frame") or "").strip()
+    last_frame = str(shot.get("last_frame") or "").strip()
+    chain_image = body.get("chainStartImage") if isinstance(body.get("chainStartImage"), dict) else None
+    if shot.get("chain_from_previous"):
+        prev = previous_shot(shot)
+        if not prev:
+            raise ValueError("Chain from previous is set, but this is the first shot.")
+        approved = (prev.get("takes") or {}).get("approved")
+        if not approved:
+            raise ValueError(f"Chain from previous: {prev['slug']} has no approved take. Approve one first, or turn chaining off.")
+        if not chain_image or not str(chain_image.get("data") or "").strip():
+            raise ValueError(f"Chain from previous: the last frame of {prev['slug']}'s approved take was not supplied.")
+        if not model_info.get("supports_start_image"):
+            raise ValueError(f"Chain from previous: {model_info.get('label', model_id)} cannot take a start image.")
+
+    # One input mode per run (normalize_video_request): reference mode carries references
+    # (+ start image where the model allows), image mode carries the start image only.
+    wants_start = bool(chain_image) or bool(first_frame)
+    if reference_urls and "reference" in modes:
+        input_mode = "reference"
+    elif wants_start and "image" in modes:
+        input_mode = "image"
+        if reference_urls:
+            warnings.append(f"{model_info.get('label', model_id)} has no reference mode; {len(reference_urls)} reference(s) were not sent.")
+    elif "text" in modes or not modes:
+        input_mode = "text"
+        if reference_urls:
+            warnings.append(f"{model_info.get('label', model_id)} has no reference mode; {len(reference_urls)} reference(s) were not sent.")
+        if wants_start:
+            warnings.append(f"{model_info.get('label', model_id)} has no image mode; the start frame was not sent.")
+    else:
+        input_mode = modes[0]
+
+    payload: dict = {
+        "assetProjectId": project["id"],
+        "assetClient": project.get("assetClient") or project.get("client") or "",
+        "assetProject": project.get("assetProject") or project.get("name") or "",
+        "assetShot": shot["slug"],
+        "assetFilename": "take",
+        "model": model_id,
+        "modelFamily": model_info.get("family", ""),
+        "provider": model_info.get("provider", ""),
+        "videoInputMode": input_mode,
+        "prompt": str(shot.get("prompt") or "").strip(),
+        "negativePrompt": str(shot.get("negative_prompt") or "").strip(),
+        "aspectRatio": _film_execution_aspect_ratio((project.get("settings") or {}).get("aspect_ratio"), {"default_aspect_ratio": "16:9"}),
+        "resolution": str((model_info.get("resolutions") or ["720p"])[0]),
+        "videoSafetyChecker": True,
+        "videoOutputSafetyChecker": True,
+        "videoGenerateAudio": False,
+        "videoPromptExpansion": True,
+        "sourceImage": {},
+        "endImage": {},
+        "referenceImages": [],
+        "referenceVideos": [],
+        "sourceVideo": {},
+        "sourceAudio": {},
+        "videoElements": [],
+        "shotId": shot["id"],
+        "shotSlug": shot["slug"],
+    }
+    if not payload["prompt"]:
+        raise ValueError("The shot has no prompt. Write one in the Prompt section first.")
+
+    durations = [int(x) for x in (model_info.get("durations") or []) if str(x).strip()]
+    wanted = shot.get("duration_seconds")
+    if wanted is not None and str(wanted).strip() != "":
+        try:
+            wanted_value = float(wanted)
+        except (TypeError, ValueError):
+            wanted_value = None
+        if wanted_value is not None:
+            payload["duration"] = min(durations, key=lambda d: abs(d - wanted_value)) if durations else int(round(wanted_value))
+            if durations and payload["duration"] != wanted_value:
+                warnings.append(f"Duration {wanted_value:g}s snapped to {payload['duration']}s for {model_info.get('label', model_id)}.")
+    elif durations:
+        payload["duration"] = durations[0]
+
+    supports_start = bool(model_info.get("supports_start_image")) and input_mode != "text"
+    if supports_start:
+        if chain_image:
+            payload["sourceImage"] = {"mime_type": str(chain_image.get("mime_type") or "image/png"), "data": str(chain_image.get("data") or ""), "name": "chain-start.png"}
+        elif first_frame:
+            payload["sourceImage"] = load_asset_image_payload(first_frame, "video-source.png")
+    if bool(model_info.get("supports_end_image")) and input_mode != "text" and last_frame:
+        payload["endImage"] = load_asset_image_payload(last_frame, "video-end-frame.png")
+    if input_mode == "reference":
+        max_refs = int(model_info.get("max_reference_images", 0) or 0)
+        if max_refs and len(reference_urls) > max_refs:
+            warnings.append(f"{model_info.get('label', model_id)} takes {max_refs} references; the last {len(reference_urls) - max_refs} were dropped.")
+            reference_urls = reference_urls[:max_refs]
+        payload["referenceImages"] = [load_asset_image_payload(url, f"{name}.png") for url, name in reference_urls]
+    return payload, warnings
+
+
+def summarize_render_payload(payload: dict) -> dict:
+    """The payload with binary data replaced by sizes, for reports and the API response."""
+    def strip(image):
+        if not isinstance(image, dict) or not image.get("data"):
+            return {} if isinstance(image, dict) else image
+        return {k: v for k, v in image.items() if k != "data"} | {"data_bytes": len(image.get("data", "")) * 3 // 4}
+    summary = dict(payload)
+    summary["sourceImage"] = strip(payload.get("sourceImage"))
+    summary["endImage"] = strip(payload.get("endImage"))
+    summary["referenceImages"] = [strip(img) for img in payload.get("referenceImages") or []]
+    return summary
+
+
+def _run_shot_render_job(job_id: str, take_id: int, shot_id: int, payload: dict) -> None:
+    """Caller of the existing video job runner; records the outcome on the take and the shot."""
+    update_take(take_id, status="rendering")
+    set_shot_status(shot_id, "rendering")
+    try:
+        _run_video_async_job(job_id, payload)
+    except Exception as exc:  # the runner records its own failures; this is belt and braces
+        update_async_job(job_id, status="failed", completed_at=utc_now_iso(), error=str(exc))
+    job = get_async_job(job_id) or {}
+    if job.get("status") == "completed":
+        result = job.get("result") or {}
+        videos = result.get("videos") or []
+        first = videos[0] if videos else {}
+        update_take(
+            take_id,
+            status="done",
+            asset_path=str(first.get("url") or ""),
+            poster_path=str(first.get("poster_url") or ""),
+            cost=float(result.get("cost") or 0.0),
+            engine=str((result.get("params") or {}).get("model") or payload.get("model") or ""),
+            error="",
+            completed_at=utc_now_iso(),
+        )
+        set_shot_status(shot_id, "done")
+    else:
+        update_take(take_id, status="failed", error=str(job.get("error") or "Render failed."), completed_at=utc_now_iso())
+        set_shot_status(shot_id, "failed")
+
+
+def start_shot_render(shot_id, body: dict | None = None) -> dict:
+    shot = get_shot(shot_id)
+    if not shot:
+        raise LookupError("Shot not found")
+    project = get_project(shot["project_id"])
+    if not project or project.get("type") != "film":
+        raise ValueError("Shots render only inside film projects")
+    if (shot.get("takes") or {}).get("rendering"):
+        raise ValueError("This shot is already rendering.")
+    payload, warnings = build_shot_render_payload(shot, project, body)
+    job = create_async_job("video")
+    take = create_take(shot["id"], engine=payload["model"], prompt_sent=payload["prompt"], job_id=job["jobId"])
+    set_shot_status(shot["id"], "queued")
+    threading.Thread(
+        target=_run_shot_render_job,
+        args=(job["jobId"], take["id"], shot["id"], clone_jsonable(payload) or {}),
+        daemon=True,
+    ).start()
+    return {"take": take, "job": job, "payload": summarize_render_payload(payload), "warnings": warnings, "shot": get_shot(shot["id"])}
 
 
 def get_task_template(slug: str) -> dict | None:
@@ -8289,6 +8683,73 @@ def api_shots_delete(shot_id):
     if not delete_shot(shot_id):
         return jsonify({"ok": False, "error": "Shot not found"}), 404
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API - Takes + render (Director Studio)
+# ---------------------------------------------------------------------------
+@app.route("/api/shots/<int:shot_id>/takes", methods=["GET"])
+@login_required
+def api_shot_takes(shot_id):
+    if not get_shot(shot_id):
+        return jsonify({"ok": False, "error": "Shot not found"}), 404
+    return jsonify({"ok": True, "takes": fetch_takes(shot_id)})
+
+
+@app.route("/api/shots/<int:shot_id>/render", methods=["POST"])
+@login_required
+def api_shot_render(shot_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        result = start_shot_render(shot_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, **result}), 202
+
+
+@app.route("/api/shots/<int:shot_id>/render-preview", methods=["POST"])
+@login_required
+def api_shot_render_preview(shot_id):
+    """Dry run: the payload that a render would send, without rendering."""
+    shot = get_shot(shot_id)
+    if not shot:
+        return jsonify({"ok": False, "error": "Shot not found"}), 404
+    project = get_project(shot["project_id"])
+    body = request.get_json(silent=True) or {}
+    try:
+        payload, warnings = build_shot_render_payload(shot, project or {}, body)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "payload": summarize_render_payload(payload), "warnings": warnings})
+
+
+@app.route("/api/takes/<int:take_id>", methods=["PATCH"])
+@login_required
+def api_take_update(take_id):
+    body = request.get_json(silent=True) or {}
+    fields = {}
+    if "approved" in body:
+        fields["approved"] = bool(body.get("approved"))
+    try:
+        take = update_take(take_id, **fields)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "take": take, "shot": get_shot(take["shot_id"]) if take else None})
+
+
+@app.route("/api/takes/<int:take_id>", methods=["DELETE"])
+@login_required
+def api_take_delete(take_id):
+    take = get_take(take_id)
+    if not take or not delete_take(take_id):
+        return jsonify({"ok": False, "error": "Take not found"}), 404
+    return jsonify({"ok": True, "shot": get_shot(take["shot_id"])})
 
 
 @app.route("/api/reference-archive-list")
