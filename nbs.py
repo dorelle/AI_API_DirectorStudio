@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 """
-AI API Studio (nbs.py)
+Directors Studio (nbs.py)
 AI image generator powered by Google Gemini
 Run: python nbs.py
 """
@@ -27,7 +27,7 @@ def _bootstrap():
         return
     pkgs = [pkg for _, pkg in missing]
     print("\n" + "="*52)
-    print(f"  AI API Studio {APP_VERSION} - First-run Setup")
+    print(f"  Directors Studio {APP_VERSION} - First-run Setup")
     print("="*52)
     print(f"  Missing packages: {', '.join(pkgs)}")
     print("  Installing automatically... (one-time only)\n")
@@ -35,7 +35,7 @@ def _bootstrap():
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "--quiet"] + pkgs
         )
-        print("\n  Done! Starting AI API Studio...\n")
+        print("\n  Done! Starting Directors Studio...\n")
     except subprocess.CalledProcessError as e:
         print(f"\n  Install failed: {e}")
         print("  Try manually: pip install -r requirements.txt")
@@ -1994,6 +1994,88 @@ DEFAULT_TASK_TEMPLATES = [
     },
 ]
 
+# Film templates (Director Studio). Same shape as DEFAULT_TASK_TEMPLATES plus project_type.
+DEFAULT_FILM_TASK_TEMPLATES = [
+    {
+        "slug": "film_story",
+        "name": "Story",
+        "description": "Turn a premise and register into structure and beats.",
+        "default_provider": "gemini",
+        "default_workflow": "film-story-v1",
+        "default_model": "gemini-3.1-flash-image-preview",
+        "default_aspect_ratio": "16:9",
+        "default_image_size": "1K",
+        "default_temperature": 1.0,
+        "prompt_scaffold": "Work as a story editor. From the premise and register, lay out the structure and the key beats, then render one frame that captures the story's defining image.",
+        "project_type": "film",
+    },
+    {
+        "slug": "film_scene_breakdown",
+        "name": "Scene Breakdown",
+        "description": "Break one scene into the shots that make it.",
+        "default_provider": "gemini",
+        "default_workflow": "film-scene-breakdown-v1",
+        "default_model": "gemini-3.1-flash-image-preview",
+        "default_aspect_ratio": "16:9",
+        "default_image_size": "1K",
+        "default_temperature": 0.95,
+        "prompt_scaffold": "Work as a first AD and DP. Break the scene into its shots in order, naming size, angle, and purpose for each, then render the establishing frame.",
+        "project_type": "film",
+    },
+    {
+        "slug": "film_casting",
+        "name": "Casting",
+        "description": "From a role described, propose talent candidates.",
+        "default_provider": "gemini",
+        "default_workflow": "film-casting-v1",
+        "default_model": "gemini-3-pro-image-preview",
+        "default_aspect_ratio": "4:5",
+        "default_image_size": "2K",
+        "default_temperature": 1.0,
+        "prompt_scaffold": "Work as a casting director. From the role as described, render a candidate: a clean, natural-light headshot with an honest expression and no styling beyond what the role implies.",
+        "project_type": "film",
+    },
+    {
+        "slug": "film_wardrobe",
+        "name": "Wardrobe",
+        "description": "For a character in a scene, propose look candidates.",
+        "default_provider": "gemini",
+        "default_workflow": "film-wardrobe-v1",
+        "default_model": "gemini-3-pro-image-preview",
+        "default_aspect_ratio": "4:5",
+        "default_image_size": "2K",
+        "default_temperature": 1.0,
+        "prompt_scaffold": "Work as a costume designer. For the character in this scene, render a full-length look candidate that reads at a glance and belongs to the film's world and period.",
+        "project_type": "film",
+    },
+    {
+        "slug": "film_location",
+        "name": "Location",
+        "description": "From a place described, propose environment candidates.",
+        "default_provider": "gemini",
+        "default_workflow": "film-location-v1",
+        "default_model": "gemini-3-pro-image-preview",
+        "default_aspect_ratio": "16:9",
+        "default_image_size": "2K",
+        "default_temperature": 1.05,
+        "prompt_scaffold": "Work as a location scout. From the place as described, render an environment candidate with believable production detail, practical light sources, and room for blocking.",
+        "project_type": "film",
+    },
+    {
+        "slug": "film_shot_direction",
+        "name": "Shot Direction",
+        "description": "For one shot, define camera and movement.",
+        "default_provider": "gemini",
+        "default_workflow": "film-shot-direction-v1",
+        "default_model": "gemini-3.1-flash-image-preview",
+        "default_aspect_ratio": "16:9",
+        "default_image_size": "1K",
+        "default_temperature": 0.9,
+        "prompt_scaffold": "Work as a director and DP. For this shot, specify lens, camera height, framing, and movement, then render the frame at the moment the movement lands.",
+        "project_type": "film",
+    },
+]
+
 WORKBENCH_CHANNEL_LABELS = {
     "instagram_feed": "Instagram Feed",
     "meta_ads": "Meta Ads",
@@ -2026,6 +2108,16 @@ def ensure_task_runs_columns(conn):
     for name, ddl in desired.items():
         if name not in cols:
             conn.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {ddl}")
+
+
+def ensure_task_templates_columns(conn):
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_templates)").fetchall()}
+    desired = {
+        "project_type": "TEXT NOT NULL DEFAULT 'campaign'",
+    }
+    for name, ddl in desired.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE task_templates ADD COLUMN {name} {ddl}")
 
 
 def init_studio_db():
@@ -2092,15 +2184,17 @@ def init_studio_db():
         )
         """
     )
+    ensure_task_templates_columns(conn)
     now_ts = utc_now_iso()
-    for template in DEFAULT_TASK_TEMPLATES:
+    for template in DEFAULT_TASK_TEMPLATES + DEFAULT_FILM_TASK_TEMPLATES:
         conn.execute(
             """
             INSERT OR IGNORE INTO task_templates (
                 slug, name, description, default_provider, default_workflow,
                 default_model, default_aspect_ratio, default_image_size,
-                default_temperature, prompt_scaffold, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                default_temperature, prompt_scaffold, created_at, updated_at,
+                project_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 template["slug"],
@@ -2115,21 +2209,27 @@ def init_studio_db():
                 template["prompt_scaffold"],
                 now_ts,
                 now_ts,
+                template.get("project_type", "campaign"),
             ),
         )
     conn.commit()
     conn.close()
 
 
-def fetch_task_templates():
+def fetch_task_templates(project_type: str = ""):
     init_studio_db()
     conn = get_db_connection()
-    rows = conn.execute(
+    query = (
         "SELECT slug, name, description, default_provider, default_workflow, "
         "default_model, default_aspect_ratio, default_image_size, "
-        "default_temperature, prompt_scaffold "
-        "FROM task_templates ORDER BY id ASC"
-    ).fetchall()
+        "default_temperature, prompt_scaffold, project_type "
+        "FROM task_templates"
+    )
+    params = ()
+    if project_type:
+        query += " WHERE project_type = ?"
+        params = (project_type,)
+    rows = conn.execute(query + " ORDER BY id ASC", params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
@@ -2384,6 +2484,77 @@ def _build_prompt_from_brief(template: dict, route: dict, brief: dict) -> str:
     return "\n\n".join(sections)
 
 
+# Cinema ratios the image models cannot take verbatim -> nearest ratio the generator offers.
+FILM_ASPECT_RATIO_EXECUTION_MAP = {
+    "2.39:1": "21:9", "2.35:1": "21:9", "2.40:1": "21:9", "2.4:1": "21:9", "2.37:1": "21:9",
+    "1.85:1": "16:9", "1.78:1": "16:9", "1.77:1": "16:9", "1.66:1": "3:2", "1.5:1": "3:2",
+    "1.33:1": "4:3", "1.37:1": "4:3", "1:1": "1:1", "9:16": "9:16", "4:5": "4:5",
+}
+GENERATOR_ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5", "4:1", "1:4", "8:1", "1:8")
+
+
+def _film_execution_aspect_ratio(project_aspect: str, template: dict) -> str:
+    text = str(project_aspect or "").strip()
+    if text in GENERATOR_ASPECT_RATIOS:
+        return text
+    mapped = FILM_ASPECT_RATIO_EXECUTION_MAP.get(text)
+    if mapped:
+        return mapped
+    return template.get("default_aspect_ratio", "16:9")
+
+
+def _film_sentence(label: str, text: str) -> str:
+    text = str(text or "").strip()
+    return f"{label}: {text}" + ("" if text.endswith((".", "!", "?", "…")) else ".")
+
+
+def _build_film_prompt_from_brief(template: dict, route: dict, brief: dict, project: dict) -> str:
+    settings = project.get("settings") or {}
+    sections = [
+        template.get("prompt_scaffold", "Create a strong film frame."),
+        f"Client: {brief.get('client_name') or 'Internal production'}.",
+        f"Project: {brief.get('project_name') or project.get('name') or 'Untitled film'}.",
+    ]
+    film_facts = []
+    if settings.get("format"):
+        film_facts.append(f"format {settings['format']}")
+    if settings.get("runtime"):
+        film_facts.append(f"runtime {settings['runtime']}")
+    if settings.get("frame_rate"):
+        film_facts.append(f"{settings['frame_rate']} fps")
+    if film_facts:
+        sections.append(f"Film: {', '.join(film_facts)}.")
+    if settings.get("register"):
+        sections.append(f"Register: {settings['register']}.")
+    sections.append(_film_sentence("Objective", brief.get("objective")))
+    if brief.get("scene"):
+        sections.append(_film_sentence("Scene", brief["scene"]))
+    if brief.get("treatment"):
+        sections.append(_film_sentence("Treatment", brief["treatment"]))
+    if brief.get("subject_summary"):
+        sections.append(_film_sentence("Subject and key assets", brief["subject_summary"]))
+    if brief.get("vibe"):
+        sections.append(_film_sentence("Creative direction and vibe", brief["vibe"]))
+    if settings.get("aspect_ratio"):
+        sections.append(f"Frame for {settings['aspect_ratio']}.")
+    sections.append(
+        "The frame should read as a still from the film: motivated light, coherent production design, and a clear dramatic beat."
+    )
+    if brief.get("constraints_summary"):
+        sections.append(_film_sentence("Hard constraints", brief["constraints_summary"]))
+
+    automation_level = brief.get("automation_level", "balanced")
+    if automation_level == "aggressive":
+        sections.append("Push the staging: bold blocking, decisive camera, strong contrast between beats.")
+    elif automation_level == "assisted":
+        sections.append("Stay close to the script and the register; avoid stylistic risk the director has not asked for.")
+    else:
+        sections.append("Balance authorship with what a crew can actually shoot.")
+
+    sections.append("Use realistic lighting, coherent materials, and a production-ready sense of composition.")
+    return "\n\n".join(sections)
+
+
 def build_workbench_plan(body: dict) -> dict:
     task_slug = str(body.get("task_slug", "campaign_launch")).strip()
     template = get_task_template(task_slug)
@@ -2394,6 +2565,15 @@ def build_workbench_plan(body: dict) -> dict:
     if not objective:
         raise ValueError("Objective is required")
 
+    # Active project record (Task 02): its type decides campaign vs film planning.
+    project = get_project(body.get("assetProjectId")) if body.get("assetProjectId") not in (None, "") else None
+    is_film = bool(project and project.get("type") == "film")
+    template_type = template.get("project_type") or "campaign"
+    if is_film and template_type != "film":
+        raise ValueError("Choose a film template for a film project")
+    if template_type == "film" and not is_film:
+        raise ValueError("Film templates need a film project selected in the scope bar")
+
     brief = {
         "client_name": str(body.get("client_name", "")).strip(),
         "project_name": str(body.get("project_name", "")).strip(),
@@ -2402,13 +2582,22 @@ def build_workbench_plan(body: dict) -> dict:
         "vibe": str(body.get("vibe", "")).strip(),
         "constraints_summary": str(body.get("constraints_summary", "")).strip(),
         "automation_level": str(body.get("automation_level", "balanced")).strip() or "balanced",
-        "channels": _normalize_channels(body.get("channels", [])),
+        "channels": [] if is_film else _normalize_channels(body.get("channels", [])),
     }
-    if not brief["channels"]:
+    if is_film:
+        brief["scene"] = str(body.get("scene", "")).strip()
+        brief["treatment"] = str(body.get("treatment", "")).strip()
+        brief["project_id"] = project["id"]
+        brief["project_type"] = "film"
+    elif not brief["channels"]:
         brief["channels"] = ["instagram_feed"]
 
     route = _route_workbench_task(template, brief["channels"], brief["automation_level"])
-    prompt_text = _build_prompt_from_brief(template, route, brief)
+    if is_film:
+        route["aspect_ratio"] = _film_execution_aspect_ratio((project.get("settings") or {}).get("aspect_ratio"), template)
+        prompt_text = _build_film_prompt_from_brief(template, route, brief, project)
+    else:
+        prompt_text = _build_prompt_from_brief(template, route, brief)
     estimated_outputs = _estimate_output_count(brief["channels"], brief["automation_level"])
     price_per_image = PRICING.get(route["model"], {}).get(route["image_size"], 0.0)
     est_low = round(price_per_image * max(2, estimated_outputs // 2), 4)
@@ -2424,6 +2613,8 @@ def build_workbench_plan(body: dict) -> dict:
         "task_slug": template["slug"],
         "task_name": template["name"],
         "description": template["description"],
+        "project_id": project["id"] if project else None,
+        "project_type": project["type"] if project else "",
         "brief": brief,
         "recommended_provider": route["recommended_provider"],
         "recommended_workflow": route["workflow"],
@@ -3552,7 +3743,7 @@ def fetch_remote_reference_image(url: str) -> tuple[str, str, str]:
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": f"AI API Studio/{APP_VERSION}"},
+            headers={"User-Agent": f"Directors Studio/{APP_VERSION}"},
             stream=True,
             timeout=20,
         )
@@ -4386,7 +4577,8 @@ def credits():
 def workbench():
     return render_template(
         "workbench.html",
-        task_templates=fetch_task_templates(),
+        task_templates=fetch_task_templates(project_type="campaign"),
+        film_task_templates=fetch_task_templates(project_type="film"),
         report=get_workbench_report(),
         channel_labels=WORKBENCH_CHANNEL_LABELS,
         user=session["user"],
@@ -11449,7 +11641,7 @@ def api_publish():
 @app.route("/api/workbench/templates")
 @login_required
 def api_workbench_templates():
-    return jsonify(fetch_task_templates())
+    return jsonify(fetch_task_templates(project_type=str(request.args.get("project_type", "") or "").strip().lower()))
 
 
 @app.route("/api/workbench/report")
@@ -11540,7 +11732,7 @@ if __name__ == "__main__":
                 shutil.copytree(src, dst) if os.path.isdir(src) else shutil.copy2(src, dst)
         print("  Migrated published/ -> loved/")
     print("\n" + "="*52)
-    print(f"  AI API Studio {APP_VERSION}")
+    print(f"  Directors Studio {APP_VERSION}")
     print("  http://localhost:8000")
     print("  Login: admin / banana2024")
     print("  Max ref images: NB=0, Pro=8, NB2=14")

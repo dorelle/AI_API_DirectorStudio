@@ -190,11 +190,12 @@
     if (input.id === "projectMetaProject") return mergeUniqueValues(optionsCache.projects);
     if (input.id === "projectMetaShot") return mergeUniqueValues(optionsCache.shots);
     if (input.id === "projectMetaFilename") return mergeUniqueValues(optionsCache.filenames, [input.value]);
+    if (input.id === "projectModalClient") return mergeUniqueValues(optionsCache.clients).filter((value) => value !== "uncategorized");
     return [];
   }
 
   function ensureMenu(input) {
-    const field = input?.closest(".project-meta-field");
+    const field = input?.closest(".project-meta-field, .project-modal-suggest-field");
     if (!field) return null;
     let menu = field.querySelector(".project-meta-menu");
     if (!menu) {
@@ -217,7 +218,7 @@
 
   function renderMenuForInput(input, { filterWithValue = true } = {}) {
     const menu = ensureMenu(input);
-    const field = input?.closest(".project-meta-field");
+    const field = input?.closest(".project-meta-field, .project-modal-suggest-field");
     if (!menu || !field) return;
     const query = filterWithValue ? String(input.value || "").trim().toLowerCase() : "";
     const values = getMenuValuesForInput(input).filter((value) => {
@@ -360,7 +361,12 @@
     }
 
     const newBtn = bar.querySelector("#projectMetaNewBtn");
-    if (newBtn) newBtn.addEventListener("click", openProjectModal);
+    if (newBtn) newBtn.addEventListener("click", () => openProjectModal());
+    const editBtn = bar.querySelector("#projectMetaEditBtn");
+    if (editBtn) editBtn.addEventListener("click", () => {
+      const record = findProjectRecord(getCurrentState().assetProjectId);
+      if (record) openProjectModal(record);
+    });
 
     [client, project, shot].forEach((input) => {
       if (!input) return;
@@ -406,9 +412,31 @@
     }
 
     document.addEventListener("pointerdown", (event) => {
-      if (!event.target.closest(".project-meta-field")) {
+      if (!event.target.closest(".project-meta-field, .project-modal-suggest-field")) {
         closeAllMenus();
       }
+    });
+  }
+
+  // The New/Edit Project modal's Client input reuses the scope bar's suggestion menu.
+  function bindModalClientSuggestions() {
+    const input = document.getElementById("projectModalClient");
+    if (!input) return;
+    input.addEventListener("focus", async () => {
+      await fetchOptions();
+      renderMenuForInput(input, { filterWithValue: false });
+    });
+    input.addEventListener("click", () => {
+      renderMenuForInput(input, { filterWithValue: false });
+    });
+    input.addEventListener("input", () => {
+      renderMenuForInput(input, { filterWithValue: true });
+    });
+    input.addEventListener("blur", () => {
+      window.setTimeout(closeAllMenus, 120);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeAllMenus();
     });
   }
 
@@ -456,18 +484,42 @@
     if (film) film.style.display = type === "film" ? "" : "none";
   }
 
-  function openProjectModal() {
+  const FILM_SETTING_INPUTS = {
+    format: "projectModalFormat",
+    runtime: "projectModalRuntime",
+    aspect_ratio: "projectModalAspectRatio",
+    frame_rate: "projectModalFrameRate",
+    register: "projectModalRegister",
+    resolve_folder: "projectModalResolveFolder",
+  };
+  let projectModalEditingId = "";
+
+  function openProjectModal(record = null) {
     const overlay = getProjectModal();
     if (!overlay) return;
+    projectModalEditingId = record ? String(record.id) : "";
     const state = getCurrentState();
     const nameInput = document.getElementById("projectModalName");
     const clientInput = document.getElementById("projectModalClient");
-    if (nameInput) nameInput.value = "";
-    if (clientInput) clientInput.value = state.assetClient && state.assetClient !== "uncategorized" ? state.assetClient : "";
-    ["projectModalFormat", "projectModalRuntime", "projectModalAspectRatio", "projectModalFrameRate", "projectModalRegister", "projectModalResolveFolder"].forEach((id) => {
+    const typeSelect = document.getElementById("projectModalType");
+    const settings = (record && record.settings) || {};
+    if (nameInput) nameInput.value = record ? (record.name || "") : "";
+    if (clientInput) {
+      clientInput.value = record
+        ? (record.client || "")
+        : (state.assetClient && state.assetClient !== "uncategorized" ? state.assetClient : "");
+    }
+    if (typeSelect) typeSelect.value = record && record.type ? record.type : "campaign";
+    Object.entries(FILM_SETTING_INPUTS).forEach(([key, id]) => {
       const el = document.getElementById(id);
-      if (el) el.value = "";
+      if (el) el.value = record && settings[key] != null ? String(settings[key]) : "";
     });
+    const title = document.getElementById("projectModalTitle");
+    if (title) title.textContent = record ? "Edit Project" : "New Project";
+    const saveBtn = document.getElementById("projectModalSave");
+    if (saveBtn) saveBtn.textContent = record ? "Save changes" : "Create project";
+    const renameNote = document.getElementById("projectModalRenameNote");
+    if (renameNote) renameNote.style.display = record ? "" : "none";
     setProjectModalError("");
     syncProjectModalType();
     overlay.style.display = "flex";
@@ -488,14 +540,10 @@
       type,
     };
     if (type === "film") {
-      body.settings = {
-        format: document.getElementById("projectModalFormat")?.value || "",
-        runtime: document.getElementById("projectModalRuntime")?.value || "",
-        aspect_ratio: document.getElementById("projectModalAspectRatio")?.value || "",
-        frame_rate: document.getElementById("projectModalFrameRate")?.value || "",
-        register: document.getElementById("projectModalRegister")?.value || "",
-        resolve_folder: document.getElementById("projectModalResolveFolder")?.value || "",
-      };
+      body.settings = {};
+      Object.entries(FILM_SETTING_INPUTS).forEach(([key, id]) => {
+        body.settings[key] = document.getElementById(id)?.value || "";
+      });
     }
     if (!String(body.name).trim()) {
       setProjectModalError("Project name is required.");
@@ -503,23 +551,25 @@
     }
     if (saveBtn) saveBtn.disabled = true;
     setProjectModalError("");
+    const editing = projectModalEditingId;
     try {
-      const response = await fetch("/api/projects", {
-        method: "POST",
+      const response = await fetch(editing ? `/api/projects/${editing}` : "/api/projects", {
+        method: editing ? "PATCH" : "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload?.ok || !payload.project) {
-        throw new Error(payload?.error || "Could not create the project.");
+        throw new Error(payload?.error || (editing ? "Could not save the project." : "Could not create the project."));
       }
       projectsCache = [...projectsCache.filter((item) => item.id !== payload.project.id), payload.project];
       closeProjectModal();
+      // Re-select so Client/Project text follows the (possibly renamed) record and listeners hear about it.
       selectProjectRecord(payload.project.id);
       fetchProjects();
     } catch (error) {
-      setProjectModalError(error.message || "Could not create the project.");
+      setProjectModalError(error.message || (editing ? "Could not save the project." : "Could not create the project."));
     } finally {
       if (saveBtn) saveBtn.disabled = false;
     }
@@ -536,6 +586,7 @@
     document.getElementById("projectModalClose")?.addEventListener("click", closeProjectModal);
     document.getElementById("projectModalSave")?.addEventListener("click", saveProjectModal);
     document.getElementById("projectModalType")?.addEventListener("change", syncProjectModalType);
+    bindModalClientSuggestions();
     overlay.addEventListener("keydown", (event) => {
       if (event.key === "Escape") closeProjectModal();
       if (event.key === "Enter" && event.target?.tagName === "INPUT") {

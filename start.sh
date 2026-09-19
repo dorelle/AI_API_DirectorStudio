@@ -5,7 +5,7 @@
 cd "$(dirname "$0")"
 
 echo ""
-echo "  AI API Studio 1.4"
+echo "  Directors Studio 1.4"
 echo "  ============================"
 echo ""
 

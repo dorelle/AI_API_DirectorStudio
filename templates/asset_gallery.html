@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI API Studio - {{ page_title }}</title>
+<title>Directors Studio - {{ page_title }}</title>
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20260919b">
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919a"></script>
 <style>
@@ -145,26 +145,120 @@
 
   .asset-lightbox-info {
     display: none;
-    width: min(560px, 92vw);
-    max-height: 48vh;
-    overflow: auto;
-    margin-top: 14px;
-    padding: 14px 16px;
+    width: min(640px, 92vw);
+    overflow: hidden;
+    margin-top: 10px;
+    padding: 10px 14px 12px;
     border-radius: 12px;
     background: rgba(10, 10, 12, 0.72);
     border: 1px solid var(--border2);
     color: var(--text2, var(--text-dim));
-    font-size: 13px;
-    line-height: 1.55;
+    font-size: 12px;
+    line-height: 1.4;
     backdrop-filter: blur(10px);
   }
 
-  .asset-lightbox-info-row + .asset-lightbox-info-row {
-    margin-top: 8px;
+  /* Only an expanded prompt may make the panel scroll. */
+  .asset-lightbox-info.is-expanded {
+    max-height: 44vh;
+    overflow: auto;
+  }
+
+  .asset-lightbox-info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 18px;
+    row-gap: 3px;
+  }
+
+  .asset-lightbox-info-row {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .asset-lightbox-info-row strong {
     color: var(--text);
+    flex: 0 0 auto;
+  }
+
+  .asset-lightbox-info-row span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .asset-lightbox-info-prompt {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border2);
+  }
+
+  .asset-lightbox-info-prompt-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .asset-lightbox-info-prompt-head strong {
+    color: var(--text);
+  }
+
+  .asset-lightbox-info-prompt-toggle {
+    border: 1px solid var(--border2);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 9px;
+    cursor: pointer;
+  }
+
+  .asset-lightbox-info-prompt-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .asset-lightbox-info-prompt-text {
+    margin-top: 4px;
+    white-space: pre-wrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .asset-lightbox-info.is-expanded .asset-lightbox-info-prompt-text {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+  }
+
+  /* While the panel is open the media gives up height so the panel stays above the fold. */
+  #assetLightbox.lightbox-info-open img,
+  #assetLightbox.lightbox-info-open video {
+    max-height: 42vh;
+  }
+
+  @media (max-height: 640px) {
+    #assetLightbox.lightbox-info-open img,
+    #assetLightbox.lightbox-info-open video {
+      max-height: 34vh;
+    }
+    .asset-lightbox-info {
+      font-size: 11px;
+      padding: 8px 12px 10px;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .asset-lightbox-info-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .mask-editor-panel {
@@ -227,8 +321,8 @@
   }
 
   .mask-editor-mode-btn.active {
-    border-color: rgba(255,59,59,0.58);
-    background: rgba(255,59,59,0.14);
+    border-color: rgba(var(--accent-rgb), 0.58);
+    background: rgba(var(--accent-rgb), 0.14);
   }
 
   .mask-editor-primary-btn {
@@ -301,7 +395,7 @@
     border-radius: 999px;
     border: 1.5px solid rgba(255,255,255,0.9);
     background: rgba(255,255,255,0.02);
-    box-shadow: 0 0 0 1px rgba(255,59,59,0.9), 0 0 0 1px rgba(0,0,0,0.45) inset;
+    box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.9), 0 0 0 1px rgba(0,0,0,0.45) inset;
     transform: translate(-50%, -50%);
     pointer-events: none;
     z-index: 3;
@@ -377,7 +471,7 @@
 <body>
 <nav class="navbar">
   <div class="nav-left">
-      <a href="/index" class="nav-logo">AI API Studio <span class="nav-version">1.3</span></a>
+      <a href="/index" class="nav-logo">Directors Studio <span class="nav-version">1.3</span></a>
     {% include "_project_meta_bar.html" %}
   </div>
   <div class="nav-links">
@@ -385,10 +479,10 @@
     <a href="/images" class="active">Assets</a>
     <a href="/workbench">Workbench</a>
     <a href="/reports">Reports</a>
-    <a href="/settings">Settings</a>
-    <a href="/credits">Credits</a>
-    <button class="nav-theme-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Switch to Light mode">Light</button>
-    <a href="/logout" class="nav-logout">Logout</a>
+    <a href="/settings" class="nav-icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+    <a href="/credits" class="nav-icon" title="Credits" aria-label="Credits"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></a>
+    <button class="nav-theme-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Switch to Light mode" aria-label="Switch theme"><svg class="nav-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg><svg class="nav-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+    <a href="/logout" class="nav-logout nav-icon" title="Logout" aria-label="Logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></a>
   </div>
 </nav>
 
@@ -1187,7 +1281,6 @@ function syncThemeToggleLabel() {
   const btn = document.getElementById("themeToggleBtn");
   if (!btn) return;
   const light = document.documentElement.getAttribute("data-theme") === "light";
-  btn.textContent = light ? "Dark" : "Light";
   btn.title = light ? "Switch to Dark mode" : "Switch to Light mode";
 }
 
@@ -1633,9 +1726,9 @@ function showAssetInfo(item) {
   const rows = [];
   const push = (label, value) => {
     if (value === undefined || value === null || value === "") return;
-    rows.push(`<div class="asset-lightbox-info-row"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`);
+    rows.push(`<div class="asset-lightbox-info-row" title="${escapeHtml(value)}"><strong>${escapeHtml(label)}:</strong> <span>${escapeHtml(value)}</span></div>`);
   };
-  push("Prompt", params.prompt || item.prompt_preview || "");
+  const promptText = String(params.prompt || item.prompt_preview || "");
   push("Model", params.model_label || "");
   push("Provider", params.provider_label || params.provider || "");
   push("Client", params.assetClient || "");
@@ -1654,13 +1747,44 @@ function showAssetInfo(item) {
   if (currentAssetKind === "references") push("Reference name", item.reference_name || "");
   if (currentAssetKind === "references") push("Source generation", [item.source_generation_date, item.source_generation_filename].filter(Boolean).join(" / "));
   push("Date", item.date || "");
-  info.innerHTML = rows.join("");
-  info.style.display = rows.length ? "block" : "none";
+  const promptBlock = promptText
+    ? `<div class="asset-lightbox-info-prompt">
+        <div class="asset-lightbox-info-prompt-head"><strong>Prompt</strong><button type="button" class="asset-lightbox-info-prompt-toggle" id="assetLbPromptToggle">Show more</button></div>
+        <div class="asset-lightbox-info-prompt-text" id="assetLbPromptText">${escapeHtml(promptText)}</div>
+      </div>`
+    : "";
+  info.classList.remove("is-expanded");
+  info.innerHTML = `<div class="asset-lightbox-info-grid">${rows.join("")}</div>${promptBlock}`;
+  const toggle = document.getElementById("assetLbPromptToggle");
+  const promptEl = document.getElementById("assetLbPromptText");
+  if (toggle && promptEl) {
+    // Hide the control when the prompt already fits in two lines.
+    const fits = promptEl.scrollHeight <= promptEl.clientHeight + 1;
+    toggle.style.display = fits ? "none" : "";
+    toggle.onclick = (event) => {
+      event.stopPropagation();
+      const expanded = info.classList.toggle("is-expanded");
+      toggle.textContent = expanded ? "Show less" : "Show more";
+    };
+  }
+  info.onclick = (event) => event.stopPropagation();
+  const hasContent = rows.length || promptText;
+  info.style.display = hasContent ? "block" : "none";
+  document.getElementById("assetLightbox").classList.toggle("lightbox-info-open", Boolean(hasContent));
+  if (toggle && promptEl && hasContent) {
+    // Re-measure after display switches from none, so the fit check is real.
+    const fitsNow = promptEl.scrollHeight <= promptEl.clientHeight + 1;
+    toggle.style.display = fitsNow ? "none" : "";
+  }
 }
 
 function closeAssetInfo() {
   const info = document.getElementById("assetLbInfo");
-  if (info) info.style.display = "none";
+  if (info) {
+    info.style.display = "none";
+    info.classList.remove("is-expanded");
+  }
+  document.getElementById("assetLightbox")?.classList.remove("lightbox-info-open");
 }
 
 function openAssetLightbox(item) {

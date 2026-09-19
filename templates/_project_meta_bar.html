@@ -16,6 +16,7 @@
     </select>
   </label>
   <button type="button" class="project-meta-new-btn" id="projectMetaNewBtn" title="New Project">+ New</button>
+  <button type="button" class="project-meta-new-btn project-meta-edit-btn" id="projectMetaEditBtn" title="Edit selected project">Edit</button>
   <label class="project-meta-field">
     <span class="project-meta-label">Client</span>
     <input class="project-meta-input" id="projectMetaClient" autocomplete="off" placeholder="Client" aria-label="Client" />
@@ -56,7 +57,7 @@
 <div class="modal-overlay project-modal-overlay" id="projectModalOverlay">
   <div class="modal-box project-modal-box">
     <div class="modal-header">
-      <h3>New Project</h3>
+      <h3 id="projectModalTitle">New Project</h3>
       <button type="button" class="modal-close-btn" id="projectModalClose" aria-label="Close">&times;</button>
     </div>
     <div class="project-modal-body">
@@ -65,9 +66,9 @@
           <span class="project-modal-label">Name</span>
           <input class="project-modal-input" id="projectModalName" type="text" placeholder="Spring launch, Short film 03..." autocomplete="off">
         </label>
-        <label class="project-modal-field">
+        <label class="project-modal-field project-modal-suggest-field">
           <span class="project-modal-label">Client</span>
-          <input class="project-modal-input" id="projectModalClient" type="text" placeholder="Client" autocomplete="off" list="projectMetaClients">
+          <input class="project-modal-input" id="projectModalClient" type="text" placeholder="Client" autocomplete="off">
         </label>
         <label class="project-modal-field">
           <span class="project-modal-label">Type</span>
@@ -103,6 +104,7 @@
           <input class="project-modal-input" id="projectModalResolveFolder" type="text" placeholder="Path for DaVinci Resolve exports" autocomplete="off">
         </label>
       </div>
+      <div class="project-modal-note" id="projectModalRenameNote" style="display:none">Renaming changes where new assets file. Existing assets stay under the old Client/Project folders.</div>
       <div class="project-modal-error" id="projectModalError"></div>
     </div>
     <div class="modal-footer">
