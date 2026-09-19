@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <link rel="stylesheet" href="/static/style.css">
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
-  <script defer src="/static/project_meta.js?v=20260331a"></script>
+  <script defer src="/static/project_meta.js?v=20260919a"></script>
 <style>
   .wb-main { max-width: 1280px; margin: 0 auto; padding: 84px 24px 56px; }
   .wb-hero { display:flex; justify-content:space-between; align-items:flex-end; gap:24px; margin-bottom:24px; }
@@ -154,7 +154,7 @@
           <label class="wb-label" for="subjectSummary">Subject, product, talent, or reference context</label>
           <textarea class="wb-textarea" id="subjectSummary" placeholder="Describe the product, talent, environment, references, or any assets the workflow should anchor on."></textarea>
         </div>
-        <div class="wb-field wb-span-2">
+        <div class="wb-field wb-span-2" id="channelsField">
           <label class="wb-label">Channels</label>
           <div class="wb-channel-grid">
             {% for key, label in channel_labels.items() %}
@@ -256,6 +256,26 @@ function updateTaskHelper() {
   if (!template) return;
   byId('taskHelper').innerHTML = `<strong>${escapeHtml(template.name)}</strong><br>${escapeHtml(template.description)}<br><br>${escapeHtml(template.prompt_scaffold)}`;
 }
+// Scope bar -> Workbench: prefill Client/Project from the selected project record.
+// Boxes stay editable; a typed override is kept until the selection changes again.
+let wbScopePrefill = { client: '', project: '' };
+function applyScopeToBrief(detail) {
+  const scope = detail || (typeof getAssetMetaSelection === 'function' ? getAssetMetaSelection() : null);
+  if (!scope) return;
+  const record = scope.project || (typeof getSelectedProjectRecord === 'function' ? getSelectedProjectRecord() : null);
+  const nextClient = record ? (record.client || '') : (scope.assetClient && scope.assetClient !== 'uncategorized' ? scope.assetClient : '');
+  const nextProject = record ? (record.name || '') : (scope.assetProject && scope.assetProject !== 'uncategorized' ? scope.assetProject : '');
+  const clientEl = byId('clientName');
+  const projectEl = byId('projectName');
+  if (!clientEl.value.trim() || clientEl.value === wbScopePrefill.client) clientEl.value = nextClient;
+  if (!projectEl.value.trim() || projectEl.value === wbScopePrefill.project) projectEl.value = nextProject;
+  wbScopePrefill = { client: nextClient, project: nextProject };
+  const channelsField = byId('channelsField');
+  if (channelsField) channelsField.style.display = (record && record.type === 'film') ? 'none' : '';
+}
+window.addEventListener('asset-meta-change', (event) => applyScopeToBrief(event.detail));
+document.addEventListener('DOMContentLoaded', () => applyScopeToBrief(null));
+
 function clearBrief() {
   ['clientName','projectName','objective','subjectSummary','vibe','constraintsSummary'].forEach(id => byId(id).value = '');
   byId('automationLevel').value = 'balanced';
@@ -431,6 +451,7 @@ async function runPlanDirect() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...(typeof collectAssetMetaPayload === 'function' ? collectAssetMetaPayload() : {}),
         run_uuid: latestPlan.run_uuid,
         numberOfImages: parseInt(byId('runCountSelect').value, 10) || 1,
         useSearch: byId('runUseSearch').checked,

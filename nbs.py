@@ -191,6 +191,7 @@ def merge_asset_metadata(params_meta: dict | None, payload: dict | None = None, 
 
 
 SAFE_REQUEST_SETTING_KEYS = {
+    "assetProjectId",
     "imageSize",
     "aspectRatio",
     "numberOfImages",
@@ -1490,6 +1491,7 @@ def normalize_generation_request(body: dict | None) -> dict:
     payload["provider"] = provider_key
     payload["modelLabel"] = model_info.get("label", model_id)
     payload["providerLabel"] = model_info.get("provider_label", PROVIDER_LABELS.get(provider_key, provider_key.title()))
+    apply_project_record_scope(payload)
     payload.update(normalize_asset_metadata(payload, require_filename=False))
     return payload
 
@@ -1838,6 +1840,7 @@ def normalize_video_request(body: dict | None) -> dict:
     payload["videoUpscaleOutputFormat"] = normalize_video_upscale_output_format(payload.get("videoUpscaleOutputFormat", "X264 (.mp4)"))
     payload["videoUpscaleOutputQuality"] = normalize_video_upscale_output_quality(payload.get("videoUpscaleOutputQuality", "high"))
     payload["videoUpscaleSeed"] = normalize_optional_int(payload.get("videoUpscaleSeed"))
+    apply_project_record_scope(payload)
     payload.update(normalize_asset_metadata(payload, require_filename=False))
     return payload
 
@@ -2076,6 +2079,19 @@ def init_studio_db():
         """
     )
     ensure_task_runs_columns(conn)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            client TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL DEFAULT 'campaign',
+            settings TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
     now_ts = utc_now_iso()
     for template in DEFAULT_TASK_TEMPLATES:
         conn.execute(
@@ -2116,6 +2132,138 @@ def fetch_task_templates():
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+PROJECT_TYPES = ("film", "campaign")
+FILM_PROJECT_SETTING_KEYS = ("format", "runtime", "aspect_ratio", "frame_rate", "register", "resolve_folder")
+
+
+def normalize_project_type(value) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in PROJECT_TYPES else ""
+
+
+def normalize_project_settings(project_type: str, raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    if project_type == "film":
+        settings = {}
+        for key in FILM_PROJECT_SETTING_KEYS:
+            value = raw.get(key)
+            if value is None or str(value).strip() == "":
+                settings[key] = None
+            else:
+                settings[key] = str(value).strip()
+        return settings
+    # campaign: no per-project settings defined yet
+    return {}
+
+
+def project_row_to_dict(row) -> dict:
+    item = dict(row)
+    try:
+        settings = json.loads(item.get("settings") or "{}")
+    except json.JSONDecodeError:
+        settings = {}
+    item["settings"] = settings if isinstance(settings, dict) else {}
+    item["archived"] = bool(item.get("archived"))
+    item["assetClient"] = normalize_asset_scope_text(item.get("client", "")) or ASSET_UNCATEGORIZED_VALUE
+    item["assetProject"] = normalize_asset_scope_text(item.get("name", "")) or ASSET_UNCATEGORIZED_VALUE
+    return item
+
+
+def fetch_projects(include_archived: bool = False) -> list[dict]:
+    init_studio_db()
+    conn = get_db_connection()
+    if include_archived:
+        rows = conn.execute("SELECT * FROM projects ORDER BY archived ASC, name COLLATE NOCASE ASC, id ASC").fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM projects WHERE archived = 0 ORDER BY name COLLATE NOCASE ASC, id ASC").fetchall()
+    conn.close()
+    return [project_row_to_dict(row) for row in rows]
+
+
+def get_project(project_id) -> dict | None:
+    try:
+        project_id = int(project_id)
+    except (TypeError, ValueError):
+        return None
+    init_studio_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM projects WHERE id = ? LIMIT 1", (project_id,)).fetchone()
+    conn.close()
+    return project_row_to_dict(row) if row else None
+
+
+def create_project(body: dict) -> dict:
+    name = sanitize_asset_meta_text(body.get("name", ""))
+    if not name or name.lower() == ASSET_UNCATEGORIZED_VALUE:
+        raise ValueError("Project name is required")
+    client = sanitize_asset_meta_text(body.get("client", ""))
+    project_type = normalize_project_type(body.get("type"))
+    if not project_type:
+        raise ValueError("Project type must be 'film' or 'campaign'")
+    settings = normalize_project_settings(project_type, body.get("settings"))
+    init_studio_db()
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "INSERT INTO projects (name, client, type, settings, created_at, archived) VALUES (?, ?, ?, ?, ?, 0)",
+        (name, client, project_type, json.dumps(settings, ensure_ascii=False), utc_now_iso()),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return get_project(new_id)
+
+
+def update_project(project_id, body: dict) -> dict:
+    existing = get_project(project_id)
+    if not existing:
+        raise LookupError("Project not found")
+    updates = {}
+    if "name" in body:
+        name = sanitize_asset_meta_text(body.get("name", ""))
+        if not name or name.lower() == ASSET_UNCATEGORIZED_VALUE:
+            raise ValueError("Project name is required")
+        updates["name"] = name
+    if "client" in body:
+        updates["client"] = sanitize_asset_meta_text(body.get("client", ""))
+    project_type = existing["type"]
+    if "type" in body:
+        project_type = normalize_project_type(body.get("type"))
+        if not project_type:
+            raise ValueError("Project type must be 'film' or 'campaign'")
+        updates["type"] = project_type
+    if "settings" in body or "type" in body:
+        merged_settings = dict(existing.get("settings") or {})
+        if isinstance(body.get("settings"), dict):
+            merged_settings.update(body["settings"])
+        updates["settings"] = json.dumps(normalize_project_settings(project_type, merged_settings), ensure_ascii=False)
+    if "archived" in body:
+        updates["archived"] = 1 if body.get("archived") else 0
+    if updates:
+        conn = get_db_connection()
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(f"UPDATE projects SET {assignments} WHERE id = ?", (*updates.values(), existing["id"]))
+        conn.commit()
+        conn.close()
+    return get_project(existing["id"])
+
+
+def apply_project_record_scope(payload: dict) -> dict:
+    """If the request carries a project id, take Client/Project from the record.
+    Without an id the free-text scope is used exactly as before."""
+    raw_id = payload.get("assetProjectId")
+    if raw_id is None or str(raw_id).strip() == "":
+        payload.pop("assetProjectId", None)
+        return payload
+    record = get_project(raw_id)
+    if not record:
+        payload.pop("assetProjectId", None)
+        return payload
+    payload["assetProjectId"] = record["id"]
+    payload["assetClient"] = record["assetClient"]
+    payload["assetProject"] = record["assetProject"]
+    return payload
 
 
 def get_task_template(slug: str) -> dict | None:
@@ -7499,6 +7647,7 @@ def inject_asset_metadata_bootstrap():
             "asset_meta_bootstrap": {
                 "options": collect_asset_metadata_options(),
                 "records": collect_asset_metadata_records(),
+                "projects": fetch_projects(),
             }
         }
     except Exception:
@@ -7511,6 +7660,7 @@ def inject_asset_metadata_bootstrap():
                     "filenames": [],
                 },
                 "records": [],
+                "projects": [],
             }
         }
 
@@ -7534,6 +7684,53 @@ def api_asset_metadata_memory():
     memory = update_asset_metadata_memory(config, asset_meta)
     save_config(config)
     return jsonify({"ok": True, "options": collect_asset_metadata_options(), "memory": memory})
+
+
+# ---------------------------------------------------------------------------
+# API - Projects (Director Studio)
+# ---------------------------------------------------------------------------
+@app.route("/api/projects", methods=["GET"])
+@login_required
+def api_projects_list():
+    include_archived = str(request.args.get("archived", "") or "").strip().lower() in ("1", "true", "yes")
+    return jsonify({"ok": True, "projects": fetch_projects(include_archived=include_archived)})
+
+
+@app.route("/api/projects", methods=["POST"])
+@login_required
+def api_projects_create():
+    body = request.get_json(silent=True) or {}
+    try:
+        project = create_project(body)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "project": project})
+
+
+@app.route("/api/projects/<int:project_id>", methods=["GET"])
+@login_required
+def api_projects_get(project_id):
+    project = get_project(project_id)
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    return jsonify({"ok": True, "project": project})
+
+
+@app.route("/api/projects/<int:project_id>", methods=["PATCH"])
+@login_required
+def api_projects_update(project_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        project = update_project(project_id, body)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "project": project})
 
 
 @app.route("/api/reference-archive-list")
@@ -11029,6 +11226,9 @@ def api_workbench_run():
         "outputMode": body.get("outputMode", "images_text"),
         "refImages": body.get("refImages", []),
     }
+    for scope_key in ("assetClient", "assetProject", "assetShot", "assetFilename", "assetProjectId"):
+        if scope_key in body:
+            payload[scope_key] = body.get(scope_key)
     try:
         result = run_generation_job(payload, config)
         persist_generation_result(result)

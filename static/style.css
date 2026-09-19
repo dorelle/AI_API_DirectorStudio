@@ -232,6 +232,117 @@ a:hover { text-decoration: underline; }
   outline: none;
 }
 
+/* Project record picker + New Project (Director Studio) */
+.project-meta-field-record .project-meta-select {
+  cursor: pointer;
+  max-width: 200px;
+  text-overflow: ellipsis;
+}
+
+.project-meta-field-record .project-meta-select option {
+  color: var(--text);
+  background: var(--surface2);
+}
+
+.project-meta-bar.project-meta-has-record .project-meta-field-record {
+  border-color: var(--accent);
+}
+
+.project-meta-new-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.project-meta-new-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.project-modal-box {
+  width: min(640px, 100%);
+}
+
+.project-modal-body {
+  padding: 16px 20px;
+  display: grid;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.project-modal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.project-modal-film {
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.project-modal-field {
+  display: grid;
+  gap: 6px;
+}
+
+.project-modal-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.project-modal-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 13px;
+  padding: 9px 11px;
+  outline: none;
+}
+
+.project-modal-input:focus {
+  border-color: var(--accent);
+}
+
+.project-modal-error {
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.project-modal-error:empty {
+  display: none;
+}
+
+.project-modal-save {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  padding: 8px 16px;
+}
+
+.project-modal-save:hover {
+  color: #fff;
+  opacity: 0.9;
+}
+
+.project-modal-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .info-asset-meta {
   margin-top: 10px;
   padding-top: 10px;

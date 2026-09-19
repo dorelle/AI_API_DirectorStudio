@@ -4,6 +4,7 @@
     project: "ai_api_asset_project",
     shot: "ai_api_asset_shot",
     filename: "ai_api_asset_filename",
+    projectId: "ai_api_asset_project_id",
   };
 
   const DEFAULT_STATE = {
@@ -11,6 +12,7 @@
     assetProject: "uncategorized",
     assetShot: "uncategorized",
     assetFilename: "",
+    assetProjectId: "",
   };
 
   const bootstrap = window.__ASSET_META_BOOTSTRAP__ || {};
@@ -20,6 +22,7 @@
     shots: Array.isArray(bootstrap?.options?.shots) && bootstrap.options.shots.length ? bootstrap.options.shots : ["uncategorized"],
     filenames: Array.isArray(bootstrap?.options?.filenames) ? bootstrap.options.filenames : [],
   };
+  let projectsCache = Array.isArray(bootstrap?.projects) ? bootstrap.projects : [];
 
   function getBar() {
     return document.getElementById("projectMetaBar");
@@ -35,13 +38,25 @@
     return String(value || "").trim();
   }
 
+  function normalizeProjectId(value) {
+    const clean = String(value ?? "").trim();
+    return /^\d+$/.test(clean) ? clean : "";
+  }
+
   function normalizeState(state) {
     return {
       assetClient: normalizeSelectValue(state?.assetClient, "-"),
       assetProject: normalizeSelectValue(state?.assetProject, "-"),
       assetShot: normalizeSelectValue(state?.assetShot, "-"),
       assetFilename: normalizeFilename(state?.assetFilename),
+      assetProjectId: normalizeProjectId(state?.assetProjectId),
     };
+  }
+
+  function findProjectRecord(projectId) {
+    const id = normalizeProjectId(projectId);
+    if (!id) return null;
+    return projectsCache.find((record) => String(record.id) === id) || null;
   }
 
   function mergeUniqueValues() {
@@ -65,6 +80,7 @@
       state.assetProject = localStorage.getItem(STORAGE_KEYS.project) || DEFAULT_STATE.assetProject;
       state.assetShot = localStorage.getItem(STORAGE_KEYS.shot) || DEFAULT_STATE.assetShot;
       state.assetFilename = localStorage.getItem(STORAGE_KEYS.filename) || DEFAULT_STATE.assetFilename;
+      state.assetProjectId = localStorage.getItem(STORAGE_KEYS.projectId) || DEFAULT_STATE.assetProjectId;
     } catch (error) {}
     return state;
   }
@@ -75,6 +91,7 @@
       localStorage.setItem(STORAGE_KEYS.project, state.assetProject || "-");
       localStorage.setItem(STORAGE_KEYS.shot, state.assetShot || "-");
       localStorage.setItem(STORAGE_KEYS.filename, state.assetFilename || "");
+      localStorage.setItem(STORAGE_KEYS.projectId, state.assetProjectId || "");
     } catch (error) {}
   }
 
@@ -86,7 +103,27 @@
       assetProject: bar.querySelector("#projectMetaProject")?.value,
       assetShot: bar.querySelector("#projectMetaShot")?.value,
       assetFilename: bar.querySelector("#projectMetaFilename")?.value,
+      assetProjectId: bar.querySelector("#projectMetaRecord")?.value,
     });
+  }
+
+  function renderProjectOptions(selectedId) {
+    const select = getBar()?.querySelector("#projectMetaRecord");
+    if (!select) return;
+    const wanted = normalizeProjectId(selectedId);
+    select.innerHTML = "";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "No project";
+    select.appendChild(none);
+    for (const record of projectsCache) {
+      if (record.archived && String(record.id) !== wanted) continue;
+      const option = document.createElement("option");
+      option.value = String(record.id);
+      option.textContent = record.client ? `${record.name} \u00b7 ${record.client}` : record.name;
+      select.appendChild(option);
+    }
+    select.value = findProjectRecord(wanted) ? wanted : "";
   }
 
   function setInputOptions(input, datalist, values, selectedValue, fallback = "uncategorized") {
@@ -143,6 +180,8 @@
     if (filenameInput) filenameInput.value = normalized.assetFilename;
     setFilenameOptions(bar.querySelector("#projectMetaFilenames"), mergeUniqueValues(optionsCache.filenames, [normalized.assetFilename]));
     bar.classList.toggle("project-meta-missing-filename", !normalized.assetFilename);
+    renderProjectOptions(normalized.assetProjectId);
+    bar.classList.toggle("project-meta-has-record", Boolean(findProjectRecord(normalized.assetProjectId)));
   }
 
   function getMenuValuesForInput(input) {
@@ -226,6 +265,17 @@
     } catch (error) {}
   }
 
+  async function fetchProjects() {
+    try {
+      const response = await fetch("/api/projects", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (!payload?.ok || !Array.isArray(payload.projects)) return;
+      projectsCache = payload.projects;
+      renderProjectOptions(getCurrentState().assetProjectId);
+    } catch (error) {}
+  }
+
   let memorySaveTimer = null;
   function queueMemorySave() {
     window.clearTimeout(memorySaveTimer);
@@ -243,7 +293,24 @@
   }
 
   function emitState(state) {
-    window.dispatchEvent(new CustomEvent("asset-meta-change", { detail: normalizeState(state) }));
+    const normalized = normalizeState(state);
+    window.dispatchEvent(new CustomEvent("asset-meta-change", {
+      detail: { ...normalized, project: findProjectRecord(normalized.assetProjectId) },
+    }));
+  }
+
+  function selectProjectRecord(projectId, options = {}) {
+    const record = findProjectRecord(projectId);
+    const state = getCurrentState();
+    if (record) {
+      state.assetProjectId = String(record.id);
+      state.assetClient = record.assetClient || record.client || "uncategorized";
+      state.assetProject = record.assetProject || record.name || "uncategorized";
+    } else {
+      state.assetProjectId = "";
+    }
+    applyState(state, { emit: true, persist: true });
+    if (options.saveMemory !== false) queueMemorySave();
   }
 
   function applyState(state, { emit = true, persist = true } = {}) {
@@ -263,9 +330,37 @@
 
     const commit = () => {
       const state = getCurrentState();
+      const record = findProjectRecord(state.assetProjectId);
+      if (record && (state.assetClient !== (record.assetClient || record.client) || state.assetProject !== (record.assetProject || record.name))) {
+        state.assetProjectId = "";
+      }
       applyState(state, { emit: true, persist: true });
       queueMemorySave();
     };
+
+    // Typing freely into Client or Project drops the record link; the text still files as before.
+    const clearRecordLink = () => {
+      const select = bar.querySelector("#projectMetaRecord");
+      if (select && select.value) {
+        select.value = "";
+        bar.classList.remove("project-meta-has-record");
+      }
+    };
+    [client, project].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("input", clearRecordLink);
+    });
+
+    const recordSelect = bar.querySelector("#projectMetaRecord");
+    if (recordSelect) {
+      recordSelect.addEventListener("focus", () => { fetchProjects(); });
+      recordSelect.addEventListener("change", () => {
+        selectProjectRecord(recordSelect.value);
+      });
+    }
+
+    const newBtn = bar.querySelector("#projectMetaNewBtn");
+    if (newBtn) newBtn.addEventListener("click", openProjectModal);
 
     [client, project, shot].forEach((input) => {
       if (!input) return;
@@ -339,13 +434,134 @@
     if (options.saveMemory !== false) queueMemorySave();
   };
 
+  window.getSelectedProjectRecord = function () {
+    return findProjectRecord(getCurrentState().assetProjectId);
+  };
+
+  window.selectProjectRecord = selectProjectRecord;
+
+  // --- New Project modal --------------------------------------------------
+  function getProjectModal() {
+    return document.getElementById("projectModalOverlay");
+  }
+
+  function setProjectModalError(message) {
+    const el = document.getElementById("projectModalError");
+    if (el) el.textContent = message || "";
+  }
+
+  function syncProjectModalType() {
+    const type = document.getElementById("projectModalType")?.value || "campaign";
+    const film = document.getElementById("projectModalFilmFields");
+    if (film) film.style.display = type === "film" ? "" : "none";
+  }
+
+  function openProjectModal() {
+    const overlay = getProjectModal();
+    if (!overlay) return;
+    const state = getCurrentState();
+    const nameInput = document.getElementById("projectModalName");
+    const clientInput = document.getElementById("projectModalClient");
+    if (nameInput) nameInput.value = "";
+    if (clientInput) clientInput.value = state.assetClient && state.assetClient !== "uncategorized" ? state.assetClient : "";
+    ["projectModalFormat", "projectModalRuntime", "projectModalAspectRatio", "projectModalFrameRate", "projectModalRegister", "projectModalResolveFolder"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    setProjectModalError("");
+    syncProjectModalType();
+    overlay.style.display = "flex";
+    window.setTimeout(() => nameInput?.focus(), 30);
+  }
+
+  function closeProjectModal() {
+    const overlay = getProjectModal();
+    if (overlay) overlay.style.display = "none";
+  }
+
+  async function saveProjectModal() {
+    const saveBtn = document.getElementById("projectModalSave");
+    const type = document.getElementById("projectModalType")?.value || "campaign";
+    const body = {
+      name: document.getElementById("projectModalName")?.value || "",
+      client: document.getElementById("projectModalClient")?.value || "",
+      type,
+    };
+    if (type === "film") {
+      body.settings = {
+        format: document.getElementById("projectModalFormat")?.value || "",
+        runtime: document.getElementById("projectModalRuntime")?.value || "",
+        aspect_ratio: document.getElementById("projectModalAspectRatio")?.value || "",
+        frame_rate: document.getElementById("projectModalFrameRate")?.value || "",
+        register: document.getElementById("projectModalRegister")?.value || "",
+        resolve_folder: document.getElementById("projectModalResolveFolder")?.value || "",
+      };
+    }
+    if (!String(body.name).trim()) {
+      setProjectModalError("Project name is required.");
+      return;
+    }
+    if (saveBtn) saveBtn.disabled = true;
+    setProjectModalError("");
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload?.ok || !payload.project) {
+        throw new Error(payload?.error || "Could not create the project.");
+      }
+      projectsCache = [...projectsCache.filter((item) => item.id !== payload.project.id), payload.project];
+      closeProjectModal();
+      selectProjectRecord(payload.project.id);
+      fetchProjects();
+    } catch (error) {
+      setProjectModalError(error.message || "Could not create the project.");
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  function bindProjectModal() {
+    const overlay = getProjectModal();
+    if (!overlay) return;
+    // The partial lives inside the nav; move the overlay to <body> so position:fixed is not clipped.
+    if (overlay.parentElement !== document.body) document.body.appendChild(overlay);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeProjectModal();
+    });
+    document.getElementById("projectModalClose")?.addEventListener("click", closeProjectModal);
+    document.getElementById("projectModalSave")?.addEventListener("click", saveProjectModal);
+    document.getElementById("projectModalType")?.addEventListener("change", syncProjectModalType);
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeProjectModal();
+      if (event.key === "Enter" && event.target?.tagName === "INPUT") {
+        event.preventDefault();
+        saveProjectModal();
+      }
+    });
+  }
+
   function initBar() {
     const bar = getBar();
     if (!bar) return;
     bindControls();
-    applyState(loadState(), { emit: false, persist: false });
+    bindProjectModal();
+    const initial = loadState();
+    // A stored record id wins over stored text so a renamed project stays in sync.
+    const record = findProjectRecord(initial.assetProjectId);
+    if (record) {
+      initial.assetClient = record.assetClient || record.client || "uncategorized";
+      initial.assetProject = record.assetProject || record.name || "uncategorized";
+    } else {
+      initial.assetProjectId = "";
+    }
+    applyState(initial, { emit: false, persist: true });
     fetchOptions().finally(() => {
-      applyState(loadState(), { emit: true, persist: false });
+      applyState(getCurrentState(), { emit: true, persist: false });
     });
   }
 

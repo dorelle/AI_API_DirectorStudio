@@ -3,8 +3,19 @@
 {% set _project_options = _meta_options.projects if _meta_options.projects else ['-'] %}
 {% set _shot_options = _meta_options.shots if _meta_options.shots else ['-'] %}
 {% set _filename_options = _meta_options.filenames if _meta_options.filenames else [] %}
+{% set _project_records = asset_meta_bootstrap.projects if asset_meta_bootstrap and asset_meta_bootstrap.projects else [] %}
 <div class="project-meta-bar" id="projectMetaBar">
   <span class="project-meta-group-label">Scope</span>
+  <label class="project-meta-field project-meta-field-record">
+    <span class="project-meta-label">Record</span>
+    <select class="project-meta-select" id="projectMetaRecord" aria-label="Project record">
+      <option value="">No project</option>
+      {% for record in _project_records %}
+      <option value="{{ record.id }}">{{ record.name }}{% if record.client %} · {{ record.client }}{% endif %}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="button" class="project-meta-new-btn" id="projectMetaNewBtn" title="New Project">+ New</button>
   <label class="project-meta-field">
     <span class="project-meta-label">Client</span>
     <input class="project-meta-input" id="projectMetaClient" autocomplete="off" placeholder="Client" aria-label="Client" />
@@ -41,4 +52,62 @@
     <option value="{{ value }}"></option>
     {% endfor %}
   </datalist>
+</div>
+<div class="modal-overlay project-modal-overlay" id="projectModalOverlay">
+  <div class="modal-box project-modal-box">
+    <div class="modal-header">
+      <h3>New Project</h3>
+      <button type="button" class="modal-close-btn" id="projectModalClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="project-modal-body">
+      <div class="project-modal-grid">
+        <label class="project-modal-field">
+          <span class="project-modal-label">Name</span>
+          <input class="project-modal-input" id="projectModalName" type="text" placeholder="Spring launch, Short film 03..." autocomplete="off">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Client</span>
+          <input class="project-modal-input" id="projectModalClient" type="text" placeholder="Client" autocomplete="off" list="projectMetaClients">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Type</span>
+          <select class="project-modal-input" id="projectModalType">
+            <option value="campaign">Campaign</option>
+            <option value="film">Film</option>
+          </select>
+        </label>
+      </div>
+      <div class="project-modal-grid project-modal-film" id="projectModalFilmFields" style="display:none">
+        <label class="project-modal-field">
+          <span class="project-modal-label">Format</span>
+          <input class="project-modal-input" id="projectModalFormat" type="text" placeholder="Short, feature, spot..." autocomplete="off">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Runtime</span>
+          <input class="project-modal-input" id="projectModalRuntime" type="text" placeholder="e.g. 00:03:30" autocomplete="off">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Aspect ratio</span>
+          <input class="project-modal-input" id="projectModalAspectRatio" type="text" placeholder="2.39:1, 16:9..." autocomplete="off">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Frame rate</span>
+          <input class="project-modal-input" id="projectModalFrameRate" type="text" placeholder="23.976, 24, 25..." autocomplete="off">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Register / genre</span>
+          <input class="project-modal-input" id="projectModalRegister" type="text" placeholder="Drama, fashion film, noir..." autocomplete="off">
+        </label>
+        <label class="project-modal-field">
+          <span class="project-modal-label">Resolve output folder</span>
+          <input class="project-modal-input" id="projectModalResolveFolder" type="text" placeholder="Path for DaVinci Resolve exports" autocomplete="off">
+        </label>
+      </div>
+      <div class="project-modal-error" id="projectModalError"></div>
+    </div>
+    <div class="modal-footer">
+      <span class="modal-limit-note">Name and Client become the asset folder segments.</span>
+      <button type="button" class="project-meta-new-btn project-modal-save" id="projectModalSave">Create project</button>
+    </div>
+  </div>
 </div>
