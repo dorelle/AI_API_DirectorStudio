@@ -5930,10 +5930,24 @@ def build_reference_payload_from_file(file_path: str, display_name: str = "") ->
     }
 
 
+_REFERENCE_FILE_HASH_CACHE: dict[str, tuple[tuple, str]] = {}   # path -> ((size, mtime, mask size, mask mtime), hash)
+
+
 def compute_reference_archive_file_hash(date_str: str, filename: str) -> str:
     paths = get_reference_mask_file_paths(date_str, filename)
     if not os.path.exists(paths["original_path"]):
         return ""
+    # Every page render hashes the whole archive (scope-bar bootstrap); memoise on size + mtime so
+    # unchanged files cost a stat, not a read. A changed or replaced file re-hashes.
+    try:
+        st = os.stat(paths["original_path"])
+        mask_st = os.stat(paths["mask_path"]) if os.path.exists(paths["mask_path"]) else None
+        stamp = (st.st_size, st.st_mtime_ns, mask_st.st_size if mask_st else -1, mask_st.st_mtime_ns if mask_st else -1)
+        cached = _REFERENCE_FILE_HASH_CACHE.get(paths["original_path"])
+        if cached and cached[0] == stamp:
+            return cached[1]
+    except OSError:
+        stamp = None
     try:
         digest = hashlib.sha256()
         with open(paths["original_path"], "rb") as fh:
@@ -5942,7 +5956,10 @@ def compute_reference_archive_file_hash(date_str: str, filename: str) -> str:
         if os.path.exists(paths["mask_path"]):
             with open(paths["mask_path"], "rb") as fh:
                 digest.update(fh.read())
-        return digest.hexdigest()
+        result = digest.hexdigest()
+        if stamp is not None:
+            _REFERENCE_FILE_HASH_CACHE[paths["original_path"]] = (stamp, result)
+        return result
     except Exception:
         return ""
 
