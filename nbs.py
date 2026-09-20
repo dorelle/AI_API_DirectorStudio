@@ -7603,6 +7603,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v2-6-std",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v2-6",
         "label": "Kling 2.6 Standard",
         "input_modes": ["text", "image"],
@@ -7614,6 +7615,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v2-6-pro",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v2-6",
         "label": "Kling 2.6 Pro",
         "input_modes": ["text", "image"],
@@ -7625,6 +7627,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v3-std",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v3",
         "label": "Kling 3.0 Standard",
         "input_modes": ["text", "image"],
@@ -7636,6 +7639,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v3-pro",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v3",
         "label": "Kling 3.0 Pro",
         "input_modes": ["text", "image"],
@@ -7647,6 +7651,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v3-4k-std",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v3",
         "label": "Kling 3.0 Standard 4K",
         "input_modes": ["text", "image"],
@@ -7659,6 +7664,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v3-4k-pro",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v3",
         "label": "Kling 3.0 Pro 4K",
         "input_modes": ["text", "image"],
@@ -7705,6 +7711,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v3-omni-std",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v3-omni",
         "label": "Kling 3.0 Omni Standard",
         "input_modes": ["text", "reference"],
@@ -7722,6 +7729,7 @@ KLING_DIRECT_MODEL_SPECS = [
     },
     {
         "id": "kling-v3-omni-pro",
+        "supports_generate_audio": True,
         "native_model_name": "kling-v3-omni",
         "label": "Kling 3.0 Omni Pro",
         "input_modes": ["text", "reference"],
@@ -8795,6 +8803,10 @@ VIDEO_PRICING[FAL_LTX_VIDEO_LORA_I2V_ID] = {str(duration): 0.20 for duration in 
 _TASK19_PER_SECOND = {
     "fal-ai/kling-video/v3/pro/text-to-video": 0.112,  "fal-ai/kling-video/v3/pro/image-to-video": 0.112,
     "fal-ai/kling-video/v3/standard/text-to-video": 0.084, "fal-ai/kling-video/v3/standard/image-to-video": 0.084,
+    "fal-ai/kling-video/o3/pro/text-to-video": 0.112, "fal-ai/kling-video/o3/pro/image-to-video": 0.112, "fal-ai/kling-video/o3/pro/reference-to-video": 0.112,
+    "fal-ai/kling-video/o3/standard/text-to-video": 0.084, "fal-ai/kling-video/o3/standard/image-to-video": 0.084, "fal-ai/kling-video/o3/standard/reference-to-video": 0.084,
+    "fal-ai/kling-video/o1/reference-to-video": 0.112, "fal-ai/kling-video/o1/image-to-video": 0.112,
+    "fal-ai/kling-video/o1/standard/reference-to-video": 0.112, "fal-ai/kling-video/o1/standard/image-to-video": 0.112,
     "fal-ai/bytedance/seedance/v1/lite/text-to-video": 0.036, "fal-ai/bytedance/seedance/v1/lite/image-to-video": 0.036,
     "fal-ai/bytedance/seedance/v1/lite/reference-to-video": 0.036,
     "fal-ai/bytedance/seedance/v1/pro/text-to-video": 0.124, "fal-ai/bytedance/seedance/v1/pro/image-to-video": 0.124,
@@ -8810,6 +8822,8 @@ for _model_id, _rate in _TASK19_PER_SECOND.items():
 VIDEO_AUDIO_PRICE_FACTORS = {
     "fal-ai/kling-video/v3/pro/text-to-video": 1.5, "fal-ai/kling-video/v3/pro/image-to-video": 1.5,
     "fal-ai/kling-video/v3/standard/text-to-video": 1.5, "fal-ai/kling-video/v3/standard/image-to-video": 1.5,
+    "fal-ai/kling-video/o3/pro/text-to-video": 1.25, "fal-ai/kling-video/o3/pro/image-to-video": 1.25, "fal-ai/kling-video/o3/pro/reference-to-video": 1.25,
+    "fal-ai/kling-video/o3/standard/text-to-video": 4 / 3, "fal-ai/kling-video/o3/standard/image-to-video": 4 / 3, "fal-ai/kling-video/o3/standard/reference-to-video": 4 / 3,
     "fal-ai/veo3.1": 2.0, "fal-ai/veo3.1/image-to-video": 2.0, "fal-ai/veo3.1/first-last-frame-to-video": 2.0, "fal-ai/veo3.1/reference-to-video": 2.0,
     "fal-ai/veo3.1/fast": 1.5, "fal-ai/veo3.1/fast/image-to-video": 1.5, "fal-ai/veo3.1/fast/first-last-frame-to-video": 1.5, "fal-ai/veo3.1/fast/reference-to-video": 1.5,
 }
@@ -12927,7 +12941,7 @@ def run_native_kling_video_job(body: dict, api_token: str) -> dict:
         "prompt": prompt,
         "duration": str(duration),
         "mode": kling_mode,
-        "sound": "off",
+        "sound": "on" if (bool(body.get("videoGenerateAudio")) and model_info.get("supports_generate_audio")) else "off",
         "aspect_ratio": aspect_ratio,
     }
     if negative_prompt:
