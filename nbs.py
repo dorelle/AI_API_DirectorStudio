@@ -2393,6 +2393,10 @@ def ensure_shots_columns(conn):
         "resolution":       "TEXT NOT NULL DEFAULT ''",
         "aspect_ratio":     "TEXT NOT NULL DEFAULT ''",
         "generate_audio":   "INTEGER NOT NULL DEFAULT 0",
+        # Task 19: explicit input mode ('' = inferred from what is attached), seed and CFG per shot
+        "input_mode":       "TEXT NOT NULL DEFAULT ''",
+        "seed":             "INTEGER",
+        "cfg_scale":        "REAL",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2404,6 +2408,8 @@ def ensure_takes_columns(conn):
     desired = {
         # Task 16: the take's original numbered path; asset_path carries the _approved name while approved
         "asset_path_numbered": "TEXT NOT NULL DEFAULT ''",
+        # Task 19: 'known' when cost came from a published rate, 'unknown' when no rate exists (cost stays 0 but is not a price)
+        "cost_status": "TEXT NOT NULL DEFAULT ''",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2880,7 +2886,8 @@ SHOT_TEXT_FIELDS = (
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
 # Task 08: what each attached reference is for. Starting vocabulary; the user owns this list.
 REFERENCE_ROLES = ("unassigned", "edit_target", "character", "garment", "environment", "prop", "style")
-SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id", "generate_audio")
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id", "generate_audio", "input_mode", "seed", "cfg_scale")
+SHOT_INPUT_MODES = ("text", "image", "reference", "video")
 SHOT_SORT_STEP = 10
 
 
@@ -3132,6 +3139,33 @@ def _shot_updates_from_body(body: dict) -> dict:
         updates["style_enabled"] = 1 if body.get("style_enabled") else 0
     if "generate_audio" in body:
         updates["generate_audio"] = 1 if body.get("generate_audio") else 0
+    # Task 19: input mode ('' = infer), seed (int or empty), CFG scale (0..1 or empty)
+    if "input_mode" in body:
+        mode = str(body.get("input_mode") or "").strip().lower()
+        if mode and mode not in SHOT_INPUT_MODES:
+            raise ValueError("input_mode must be one of " + ", ".join(SHOT_INPUT_MODES) + " or empty (inferred)")
+        updates["input_mode"] = mode
+    if "seed" in body:
+        raw_seed = body.get("seed")
+        if raw_seed is None or str(raw_seed).strip() == "":
+            updates["seed"] = None
+        else:
+            try:
+                updates["seed"] = int(raw_seed)
+            except (TypeError, ValueError):
+                raise ValueError("seed must be a whole number")
+    if "cfg_scale" in body:
+        raw_cfg = body.get("cfg_scale")
+        if raw_cfg is None or str(raw_cfg).strip() == "":
+            updates["cfg_scale"] = None
+        else:
+            try:
+                value = float(raw_cfg)
+            except (TypeError, ValueError):
+                raise ValueError("cfg_scale must be a number")
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("cfg_scale must be between 0 and 1")
+            updates["cfg_scale"] = value
     if "scene_id" in body:
         raw_scene = body.get("scene_id")
         if raw_scene in (None, "", 0, "0"):
@@ -4232,7 +4266,7 @@ def create_take(shot_id: int, *, engine: str, prompt_sent: str, job_id: str = ""
 
 
 def update_take(take_id, **fields) -> dict | None:
-    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at", "asset_path_numbered"}
+    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at", "asset_path_numbered", "cost_status"}
     updates = {key: value for key, value in fields.items() if key in allowed}
     if "status" in updates and updates["status"] not in TAKE_STATUSES:
         raise ValueError("status must be one of " + ", ".join(TAKE_STATUSES))
@@ -4650,9 +4684,125 @@ def previous_shot(shot: dict) -> dict | None:
     return None
 
 
+class ShotRenderBlocked(ValueError):
+    """Task 19: the resolved input mode would drop something the user attached. Nothing is sent."""
+    def __init__(self, plan: dict):
+        self.plan = plan
+        dropped = "; ".join(f"{item['what']} ({item['why']})" for item in plan.get("dropped") or [])
+        super().__init__(f"Render blocked: {dropped}. Pick an engine that takes everything, change the input mode, or detach what will not be sent.")
+
+
+def _shot_attachment_counts(shot: dict) -> dict:
+    style = shot.get("style") if (shot.get("style_id") and shot.get("style_enabled", True)) else None
+    return {
+        "elements": len(shot.get("elements") or []),
+        "reference_assets": len(shot.get("reference_assets") or []),
+        "style_images": len((style or {}).get("images") or []),
+        "first_frame": bool(str(shot.get("first_frame") or "").strip()) or bool(shot.get("chain_from_previous")),
+        "last_frame": bool(str(shot.get("last_frame") or "").strip()),
+    }
+
+
+def resolve_shot_input_mode(model_info: dict, reference_count: int, wants_start: bool, explicit_mode: str = "") -> tuple[str, str, list[dict]]:
+    """(mode, inferred_mode, dropped). One input mode per run. The inference is Task 07's: references win
+    where the model has a reference mode, else a start frame in image mode, else text. An explicit mode is
+    honoured when the model offers it; whatever that mode cannot carry is listed in `dropped`, never silently lost."""
+    label = model_info.get("label") or model_info.get("id") or "This model"
+    modes = [str(mode).strip().lower() for mode in (model_info.get("input_modes") or [])]
+    if reference_count and "reference" in modes:
+        inferred = "reference"
+    elif wants_start and "image" in modes:
+        inferred = "image"
+    elif "text" in modes or not modes:
+        inferred = "text"
+    else:
+        inferred = modes[0]
+    explicit = str(explicit_mode or "").strip().lower()
+    dropped: list[dict] = []
+    if explicit and explicit not in modes:
+        dropped.append({"what": f"input mode '{explicit}'", "why": f"{label} offers {', '.join(modes) or 'text'} only", "kind": "mode"})
+        mode = inferred
+    else:
+        mode = explicit or inferred
+    if reference_count:
+        if mode != "reference":
+            why = f"{label} has no reference mode" if "reference" not in modes else f"mode '{mode}' carries no references"
+            dropped.append({"what": f"{reference_count} reference image(s) (elements, assets, style)", "why": why, "kind": "references", "count": reference_count})
+        else:
+            max_refs = int(model_info.get("max_reference_images", 0) or 0)
+            if max_refs and reference_count > max_refs:
+                dropped.append({"what": f"the last {reference_count - max_refs} of {reference_count} reference image(s)", "why": f"{label} takes {max_refs} references", "kind": "references", "count": reference_count - max_refs})
+    if wants_start:
+        if mode == "text":
+            dropped.append({"what": "the start frame", "why": f"{label} has no image mode" if "image" not in modes else "mode 'text' carries no start frame", "kind": "start_frame"})
+        elif mode == "reference" and not model_info.get("supports_start_image"):
+            dropped.append({"what": "the start frame", "why": f"{label} does not take a start image together with references", "kind": "start_frame"})
+    return mode, inferred, dropped
+
+
+def suggest_engines_for_shot(counts: dict, current_engine: str = "", limit: int = 6) -> list[dict]:
+    """Engines in the catalog that take everything attached: references (within their limit) and, when a
+    start frame is set, a start image in that mode. Named, never selected automatically."""
+    refs = int(counts.get("elements", 0)) + int(counts.get("reference_assets", 0)) + int(counts.get("style_images", 0))
+    wants_start = bool(counts.get("first_frame"))
+    keys = provider_key_state()
+    current = VIDEO_MODELS_INFO.get(current_engine) or {}
+    found = []
+    for model_id, info in VIDEO_MODELS_INFO.items():
+        modes = [str(m).strip().lower() for m in (info.get("input_modes") or [])]
+        if refs:
+            if "reference" not in modes:
+                continue
+            max_refs = int(info.get("max_reference_images", 0) or 0)
+            if max_refs and refs > max_refs:
+                continue
+            if wants_start and not info.get("supports_start_image"):
+                continue
+        elif wants_start and "image" not in modes and not ("reference" in modes and info.get("supports_start_image")):
+            continue
+        provider = str(info.get("provider") or "")
+        ready = bool((keys.get(provider) or {}).get("set", True))
+        same_family = bool(current) and info.get("family") == current.get("family")
+        found.append(((0 if ready else 1), (0 if same_family else 1), str(info.get("label") or model_id).lower(),
+                      {"id": model_id, "label": info.get("label") or model_id, "provider": info.get("provider_label") or provider,
+                       "key_ready": ready, "input_modes": modes, "max_reference_images": int(info.get("max_reference_images", 0) or 0)}))
+    found.sort(key=lambda item: item[:3])
+    return [item[3] for item in found[:limit]]
+
+
+def plan_shot_render(shot: dict, body: dict | None = None) -> dict:
+    """What a render of this shot would do, without loading a single image: engine, resolved mode,
+    what is sent, what would be dropped, and engines that would take everything. Cheap; the editor polls it."""
+    body = body or {}
+    engine = str(shot.get("engine") or "").strip()
+    counts = _shot_attachment_counts(shot)
+    reference_count = counts["elements"] + counts["reference_assets"] + counts["style_images"]
+    plan = {"engine": engine, "attached": counts, "reference_count": reference_count, "explicit_mode": str(shot.get("input_mode") or ""),
+            "mode": "", "inferred_mode": "", "dropped": [], "suggestions": [], "ok": False, "modes": []}
+    if not engine or engine not in VIDEO_MODELS_INFO:
+        plan["error"] = "This shot has no engine." if not engine else f"Engine '{engine}' is not in the video catalog."
+        plan["suggestions"] = suggest_engines_for_shot(counts, engine)
+        return plan
+    info = VIDEO_MODELS_INFO[engine]
+    plan["modes"] = [str(m).strip().lower() for m in (info.get("input_modes") or [])]
+    plan["engine_label"] = info.get("label") or engine
+    mode, inferred, dropped = resolve_shot_input_mode(info, reference_count, counts["first_frame"], plan["explicit_mode"])
+    plan.update({"mode": mode, "inferred_mode": inferred, "dropped": dropped, "ok": not dropped})
+    plan["sends"] = {
+        "prompt": "motion prompt" + (" + style text" if (shot.get("style") and shot.get("style_enabled", True) and str((shot.get("style") or {}).get("text") or "").strip()) else ""),
+        "references": reference_count if mode == "reference" else 0,
+        "start_frame": bool(counts["first_frame"]) and mode != "text" and (mode == "image" or bool(info.get("supports_start_image"))),
+        "end_frame": bool(counts["last_frame"]) and mode != "text" and bool(info.get("supports_end_image")),
+    }
+    if dropped:
+        plan["suggestions"] = suggest_engines_for_shot(counts, engine)
+    return plan
+
+
 def build_shot_render_payload(shot: dict, project: dict, body: dict | None = None) -> tuple[dict, list[str]]:
     """Assemble the same payload a Generator video run sends, from the shot row.
-    Returns (payload, warnings). Raises ValueError when the shot cannot render."""
+    Returns (payload, warnings). Raises ValueError when the shot cannot render, and
+    ShotRenderBlocked when the resolved mode would drop an attachment (unless body.allowPartial)."""
     body = body or {}
     warnings: list[str] = []
     engine = str(shot.get("engine") or "").strip()
@@ -4713,21 +4863,14 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
 
     # One input mode per run (normalize_video_request): reference mode carries references
     # (+ start image where the model allows), image mode carries the start image only.
+    # Task 19: the shot may name its mode; anything the mode cannot carry blocks the render
+    # instead of being dropped with a warning. body.allowPartial (an explicit confirmation) proceeds.
     wants_start = bool(chain_image) or bool(first_frame)
-    if reference_urls and "reference" in modes:
-        input_mode = "reference"
-    elif wants_start and "image" in modes:
-        input_mode = "image"
-        if reference_urls:
-            warnings.append(f"{model_info.get('label', model_id)} has no reference mode; {len(reference_urls)} reference(s) were not sent.")
-    elif "text" in modes or not modes:
-        input_mode = "text"
-        if reference_urls:
-            warnings.append(f"{model_info.get('label', model_id)} has no reference mode; {len(reference_urls)} reference(s) were not sent.")
-        if wants_start:
-            warnings.append(f"{model_info.get('label', model_id)} has no image mode; the start frame was not sent.")
-    else:
-        input_mode = modes[0]
+    input_mode, inferred_mode, dropped = resolve_shot_input_mode(model_info, len(reference_urls), wants_start, shot.get("input_mode"))
+    if dropped and not body.get("allowPartial"):
+        raise ShotRenderBlocked(plan_shot_render(shot, body))
+    for item in dropped:
+        warnings.append(f"Dropped {item['what']}: {item['why']}.")
 
     payload: dict = {
         "assetProjectId": project["id"],
@@ -4811,9 +4954,17 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     if input_mode == "reference":
         max_refs = int(model_info.get("max_reference_images", 0) or 0)
         if max_refs and len(reference_urls) > max_refs:
-            warnings.append(f"{model_info.get('label', model_id)} takes {max_refs} references; the last {len(reference_urls) - max_refs} were dropped.")
-            reference_urls = reference_urls[:max_refs]
+            reference_urls = reference_urls[:max_refs]   # already listed in `dropped`
         payload["referenceImages"] = [load_asset_image_payload(url, f"{name}.png") for url, name in reference_urls]
+    # Task 19: seed and CFG per shot, when the model takes them (negative prompt is already above)
+    if model_info.get("supports_seed") and shot.get("seed") is not None:
+        payload["videoSeed"] = int(shot["seed"])
+    elif shot.get("seed") is not None:
+        warnings.append(f"{model_info.get('label', model_id)} does not take a seed; the shot's seed was ignored.")
+    if model_info.get("supports_cfg_scale") and shot.get("cfg_scale") is not None:
+        payload["videoCfgScale"] = float(shot["cfg_scale"])
+    elif shot.get("cfg_scale") is not None:
+        warnings.append(f"{model_info.get('label', model_id)} does not take a CFG scale; the shot's value was ignored.")
     return payload, warnings
 
 
@@ -4843,13 +4994,25 @@ def _run_shot_render_job(job_id: str, take_id: int, shot_id: int, payload: dict)
         result = job.get("result") or {}
         videos = result.get("videos") or []
         first = videos[0] if videos else {}
+        model_used = str((result.get("params") or {}).get("model") or payload.get("model") or "")
+        cost = float(result.get("cost") or 0.0)
+        # Task 19: a real figure or an honest unknown; never a zero that reads as a price
+        if video_price_is_known(model_used):
+            if payload.get("videoGenerateAudio") and model_used in VIDEO_AUDIO_PRICE_FACTORS:
+                cost = round(cost * VIDEO_AUDIO_PRICE_FACTORS[model_used], 4)
+            cost_status = "known"
+        elif cost > 0:
+            cost_status = "known"      # the runner reported a figure of its own
+        else:
+            cost, cost_status = 0.0, "unknown"
         update_take(
             take_id,
             status="done",
             asset_path=str(first.get("url") or ""),
             poster_path=str(first.get("poster_url") or ""),
-            cost=float(result.get("cost") or 0.0),
-            engine=str((result.get("params") or {}).get("model") or payload.get("model") or ""),
+            cost=cost,
+            cost_status=cost_status,
+            engine=model_used,
             error="",
             completed_at=utc_now_iso(),
         )
@@ -8627,7 +8790,35 @@ for model_id in (
 for model_id in (FAL_LTX_VIDEO_T2V_ID, FAL_LTX_VIDEO_I2V_ID):
     VIDEO_PRICING[model_id] = {str(duration): 0.02 for duration in VIDEO_DURATION_ALL_OPTIONS}
 VIDEO_PRICING[FAL_LTX_VIDEO_LORA_I2V_ID] = {str(duration): 0.20 for duration in VIDEO_DURATION_ALL_OPTIONS}
+# Task 19: published Fal per-second rates (audio off where the model bills audio separately; see the factors below).
+# Seedance rates are per second at the model's 720p tier; Veo at 720p/1080p. Anything not listed stays unknown.
+_TASK19_PER_SECOND = {
+    "fal-ai/kling-video/v3/pro/text-to-video": 0.112,  "fal-ai/kling-video/v3/pro/image-to-video": 0.112,
+    "fal-ai/kling-video/v3/standard/text-to-video": 0.084, "fal-ai/kling-video/v3/standard/image-to-video": 0.084,
+    "fal-ai/bytedance/seedance/v1/lite/text-to-video": 0.036, "fal-ai/bytedance/seedance/v1/lite/image-to-video": 0.036,
+    "fal-ai/bytedance/seedance/v1/lite/reference-to-video": 0.036,
+    "fal-ai/bytedance/seedance/v1/pro/text-to-video": 0.124, "fal-ai/bytedance/seedance/v1/pro/image-to-video": 0.124,
+    "bytedance/seedance-2.0/text-to-video": 0.3034, "bytedance/seedance-2.0/image-to-video": 0.3034, "bytedance/seedance-2.0/reference-to-video": 0.3034,
+    "bytedance/seedance-2.0/fast/text-to-video": 0.2419, "bytedance/seedance-2.0/fast/image-to-video": 0.2419, "bytedance/seedance-2.0/fast/reference-to-video": 0.2419,
+    "bytedance/seedance-2.5/text-to-video": 0.473, "bytedance/seedance-2.5/image-to-video": 0.473, "bytedance/seedance-2.5/reference-to-video": 0.473,
+    "fal-ai/veo3.1": 0.20, "fal-ai/veo3.1/image-to-video": 0.20, "fal-ai/veo3.1/first-last-frame-to-video": 0.20, "fal-ai/veo3.1/reference-to-video": 0.20,
+    "fal-ai/veo3.1/fast": 0.10, "fal-ai/veo3.1/fast/image-to-video": 0.10, "fal-ai/veo3.1/fast/first-last-frame-to-video": 0.10, "fal-ai/veo3.1/fast/reference-to-video": 0.10,
+}
+for _model_id, _rate in _TASK19_PER_SECOND.items():
+    VIDEO_PRICING.setdefault(_model_id, {str(duration): round(duration * _rate, 4) for duration in VIDEO_DURATION_ALL_OPTIONS})
+# Multiply the table figure by this when the take was rendered with audio on (published audio-on / audio-off ratio).
+VIDEO_AUDIO_PRICE_FACTORS = {
+    "fal-ai/kling-video/v3/pro/text-to-video": 1.5, "fal-ai/kling-video/v3/pro/image-to-video": 1.5,
+    "fal-ai/kling-video/v3/standard/text-to-video": 1.5, "fal-ai/kling-video/v3/standard/image-to-video": 1.5,
+    "fal-ai/veo3.1": 2.0, "fal-ai/veo3.1/image-to-video": 2.0, "fal-ai/veo3.1/first-last-frame-to-video": 2.0, "fal-ai/veo3.1/reference-to-video": 2.0,
+    "fal-ai/veo3.1/fast": 1.5, "fal-ai/veo3.1/fast/image-to-video": 1.5, "fal-ai/veo3.1/fast/first-last-frame-to-video": 1.5, "fal-ai/veo3.1/fast/reference-to-video": 1.5,
+}
 VIDEO_PRICING = _build_video_pricing()
+
+
+def video_price_is_known(model_id: str) -> bool:
+    table = VIDEO_PRICING.get(str(model_id or ""), {}) or {}
+    return any(float(value or 0) > 0 for value in table.values())
 
 
 # ---------------------------------------------------------------------------
@@ -10903,6 +11094,8 @@ def api_shot_render(shot_id):
         result = start_shot_render(shot_id, body)
     except LookupError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 404
+    except ShotRenderBlocked as exc:
+        return jsonify({"ok": False, "error": str(exc), "blocked": True, "plan": exc.plan}), 409
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -10948,11 +11141,24 @@ def api_shot_render_preview(shot_id):
         return jsonify({"ok": False, "error": "Shot not found"}), 404
     project = get_project(shot["project_id"])
     body = request.get_json(silent=True) or {}
+    plan = plan_shot_render(shot, body)
     try:
-        payload, warnings = build_shot_render_payload(shot, project or {}, body)
+        # the preview always shows what a confirmed render would send; `blocked` says whether it would be allowed
+        payload, warnings = build_shot_render_payload(shot, project or {}, {**body, "allowPartial": True})
     except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "payload": summarize_render_payload(payload), "warnings": warnings})
+        return jsonify({"ok": False, "error": str(exc), "plan": plan}), 400
+    return jsonify({"ok": True, "payload": summarize_render_payload(payload), "warnings": warnings, "plan": plan,
+                    "blocked": (plan.get("dropped") or None)})
+
+
+@app.route("/api/shots/<int:shot_id>/render-check", methods=["GET"])
+@login_required
+def api_shot_render_check(shot_id):
+    """Task 19: the render plan without loading images: mode, what is sent, what would be dropped, engines that fit."""
+    shot = get_shot(shot_id)
+    if not shot:
+        return jsonify({"ok": False, "error": "Shot not found"}), 404
+    return jsonify({"ok": True, "plan": plan_shot_render(shot)})
 
 
 @app.route("/api/takes/<int:take_id>", methods=["PATCH"])

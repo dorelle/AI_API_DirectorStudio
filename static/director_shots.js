@@ -23,8 +23,7 @@
       { key: "name_slug", label: "Name (two or three words)" },
     ] },
     // Working order (Task 09): numbered steps 1-7. Timing and Notes carry no number.
-    { key: "timing", label: "Timing", hint: "Duration and where it lands in the beat map.", fields: [
-      { key: "duration_seconds", label: "Duration (seconds)", type: "number" },
+    { key: "timing", label: "Timing", hint: "Where it lands in the beat map. Duration lives in the Shot settings panel (left).", fields: [
       { key: "beat_marker", label: "Beat marker" },
     ] },
     { key: "content", label: "Content", step: 1, hint: "What happens in the shot \u2014 action, dialogue, sound.", fields: [
@@ -70,6 +69,26 @@
   let stripPickShotId = "";
   let videoModels = null;          // id -> info from /api/video-models-info
   let providerKeys = {};           // provider -> {set, needs} from /api/provider-keys (labels only, never filters)
+  const renderPlans = {};          // Task 19: shotId -> /render-check plan (mode, sends, dropped, suggestions)
+  const renderPlanPending = {};
+  function invalidateRenderPlan(shotId) { delete renderPlans[String(shotId)]; }
+  function ensureRenderPlan(shotId) {
+    const key = String(shotId);
+    if (renderPlans[key] || renderPlanPending[key]) return;
+    renderPlanPending[key] = true;
+    api(`/api/shots/${shotId}/render-check`)
+      .then((payload) => { renderPlans[key] = payload.plan || {}; })
+      .catch(() => { renderPlans[key] = {}; })
+      .finally(() => {
+        delete renderPlanPending[key];
+        renderList();   // strip cards carry a Render button too; it must reflect the plan
+        if (String(selectedId) === key) { const shot = findShot(key); if (shot) { refreshEditorState(shot); renderShotSettingsPanel(); } }
+      });
+  }
+  function planDrops(shot, kind) {
+    const plan = renderPlans[String(shot.id)];
+    return (plan && Array.isArray(plan.dropped)) ? plan.dropped.filter((d) => !kind || d.kind === kind) : [];
+  }
   let videoModelsPromise = null;
   const takesCache = {};           // shotId -> takes[]
   let scenes = [];                 // the project's scenes, in sort_order
@@ -478,6 +497,7 @@
       const frameActions = url
         ? `<button type="button" class="ds-card-btn" data-card-action="pick">Replace</button><button type="button" class="ds-card-btn" data-card-action="clear">Clear</button>`
         : `<button type="button" class="ds-card-btn" data-card-action="pick">Pick frame</button>`;
+      ensureRenderPlan(shot.id);
       const ready = renderReadiness(shot);
       const renderAction = rendering
         ? ""
@@ -614,6 +634,7 @@
       const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { first_frame: url || "", locked_fields: locked } });
       const index = shots.findIndex((item) => item.id === payload.shot.id);
       if (index >= 0) shots[index] = payload.shot;
+      invalidateRenderPlan(payload.shot.id);
       renderList();
       if (String(selectedId) === String(shotId)) renderEditor();
       flashSaved(url ? "Frame set" : "Frame cleared");
@@ -670,9 +691,23 @@
     });
   }
 
+  function problemBadge(text, title) { return `<span class="ds-section-problem" title="${esc(title)}">! ${esc(text)}</span>`; }
   function sectionStateMarkup(shot, group) {
-    if (group.style) return shot.style_id ? `<span class="ds-section-check${shot.style_enabled ? "" : " is-off"}" title="${shot.style_enabled ? "Applied" : "Attached, switched off"}">${shot.style_enabled ? "\u2713" : "off"}</span>` : "";
-    if (group.list) return `<span class="ds-section-count">${(shot[group.list] || []).length}</span>`;
+    // Task 19: a section whose contents the resolved mode would drop is a problem, not a count or a check
+    const refDrops = planDrops(shot, "references");
+    if (group.style) {
+      if (shot.style_id && shot.style_enabled && refDrops.length && (shot.style && (shot.style.images || []).length)) return problemBadge("images not sent", refDrops.map((d) => d.why).join("; "));
+      return shot.style_id ? `<span class="ds-section-check${shot.style_enabled ? "" : " is-off"}" title="${shot.style_enabled ? "Applied" : "Attached, switched off"}">${shot.style_enabled ? "\u2713" : "off"}</span>` : "";
+    }
+    if (group.list) {
+      const count = (shot[group.list] || []).length;
+      if (count && refDrops.length) return `<span class="ds-section-count">${count}</span>${problemBadge("not sent", refDrops.map((d) => d.why).join("; "))}`;
+      return `<span class="ds-section-count">${count}</span>${count ? `<span class="ds-section-check" title="Will be sent">\u2713</span>` : ""}`;
+    }
+    if (group.key === "generation") {
+      const frameDrops = planDrops(shot, "start_frame");
+      if (frameDrops.length && (shot.first_frame || shot.chain_from_previous)) return problemBadge("first frame not sent", frameDrops.map((d) => d.why).join("; "));
+    }
     if (group.takes) {
       const live = shot.takes && shot.takes.rendering;
       return `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>${live ? `<span class="ds-section-live"><span class="spinner"></span>Rendering\u2026</span>` : ""}`;
@@ -693,6 +728,8 @@
     if (shot.takes && shot.takes.rendering) return { ok: false, rendering: true, reasons: ["Rendering\u2026"] };
     if (!hasText(shot.prompt)) reasons.push("Needs a prompt");
     if (!engineResolved(shot)) reasons.push("No engine on the shot (Shot settings panel)");
+    const drops = planDrops(shot);
+    if (drops.length) return { ok: false, rendering: false, blocked: true, reasons: reasons.concat(drops.map((d) => `would drop ${d.what}: ${d.why}`)), drops };
     if (shot.chain_from_previous) {
       const index = shots.findIndex((item) => item.id === shot.id);
       const prev = index > 0 ? shots[index - 1] : null;
@@ -706,8 +743,9 @@
     const ready = renderReadiness(shot);
     const title = ready.ok ? "Render this shot" : ready.reasons.join(" \u00b7 ");
     const button = `<button type="button" class="history-filter-toggle ds-render-btn" id="dsRenderBtn" ${ready.ok ? "" : "disabled"} title="${esc(title)}">${ready.rendering ? "Rendering\u2026" : "\u25B6 Render shot"}</button>`;
-    const hint = (ready.ok || ready.rendering) ? "" : `<span class="ds-ready-hint" id="dsReadyHint">${ready.reasons.map(esc).join(" \u00b7 ")}</span>`;
-    return `<span class="ds-ready">${hint}${button}</span>`;
+    const hint = (ready.ok || ready.rendering) ? "" : `<span class="ds-ready-hint${ready.blocked ? " is-blocked" : ""}" id="dsReadyHint">${ready.blocked ? "Blocked \u2014 " : ""}${ready.reasons.map(esc).join(" \u00b7 ")}</span>`;
+    const anyway = ready.blocked ? `<button type="button" class="ds-shot-mini ds-render-anyway" id="dsRenderAnyway" title="Send a reduced payload. You will be asked to confirm exactly what is dropped.">Render anyway\u2026</button>` : "";
+    return `<span class="ds-ready">${hint}${button}${anyway}</span>`;
   }
 
   // After a field save: refresh readiness + section state in place (the editor is not rebuilt, to keep focus).
@@ -718,6 +756,7 @@
     if (ready) {
       ready.outerHTML = readinessMarkup(shot);
       $("dsRenderBtn")?.addEventListener("click", () => renderShot(shot.id));
+      $("dsRenderAnyway")?.addEventListener("click", () => confirmRenderAnyway(shot.id));
     }
     FIELD_GROUPS.forEach((group) => {
       const details = host.querySelector(`details.ds-section[data-section="${group.key}"]`);
@@ -861,6 +900,8 @@
     ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureVideoModels().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     $("dsRenderBtn")?.addEventListener("click", () => renderShot(shot.id));
+    $("dsRenderAnyway")?.addEventListener("click", () => confirmRenderAnyway(shot.id));
+    ensureRenderPlan(shot.id);
     $("dsOpenShotScene")?.addEventListener("click", () => selectScene(shot.scene_id, { openEditor: true }));
     bindTakesSection(shot);
     loadTakes(shot.id);
@@ -952,6 +993,7 @@
       const payload = await api(`/api/shots/${shot.id}`, { method: "PATCH", body: { ...fields, locked_fields: locked } });
       const index = shots.findIndex((item) => item.id === payload.shot.id);
       if (index >= 0) shots[index] = payload.shot;
+      invalidateRenderPlan(payload.shot.id);
       renderList();
       if (String(selectedId) === String(shot.id)) renderEditor();
       flashSaved("Saved");
@@ -1550,6 +1592,18 @@
     summary.push(`${(shot.elements || []).length} element(s), ${(shot.reference_assets || []).length} reference(s)${shot.style_id && shot.style_enabled ? ", style on" : ""}`);
     summary.push(shot.first_frame ? "first frame set" : "no first frame");
     if (info) summary.push(`model takes: ${modes.join(" / ") || "text"}${info.max_reference_images ? ` \u00b7 up to ${info.max_reference_images} reference images` : ""}`);
+    // Task 19: the plan decides whether this reads as a status or a blocker
+    ensureRenderPlan(shot.id);
+    const plan = renderPlans[String(shot.id)] || null;
+    const drops = plan && Array.isArray(plan.dropped) ? plan.dropped : [];
+    const modeOptions = (plan && plan.modes && plan.modes.length ? plan.modes : modes).map((m) => `<option value="${esc(m)}" ${String(shot.input_mode || "") === m ? "selected" : ""}>${esc(m)}${plan && plan.inferred_mode === m ? " (inferred)" : ""}</option>`).join("");
+    const modeControl = info ? `<div class="ctrl-group"><div class="ctrl-label">Input mode</div><select class="ds-field-input" data-shot-setting="input_mode"><option value="" ${shot.input_mode ? "" : "selected"}>Inferred${plan && plan.inferred_mode ? `: ${esc(plan.inferred_mode)}` : ""}</option>${modeOptions}</select><div class="ref-note">Sends: ${plan && plan.sends ? esc([plan.sends.prompt, plan.sends.references ? `${plan.sends.references} reference image(s)` : "", plan.sends.start_frame ? "start frame" : "", plan.sends.end_frame ? "end frame" : ""].filter(Boolean).join(", ")) : "\u2026"}</div></div>` : "";
+    const seedControl = info && info.supports_seed ? `<div class="ctrl-group"><div class="ctrl-label">Seed</div><input class="ds-field-input" data-shot-setting="seed" type="number" min="0" step="1" value="${shot.seed == null ? "" : esc(String(shot.seed))}" placeholder="Random"></div>` : "";
+    const cfgControl = info && info.supports_cfg_scale ? `<div class="ctrl-group"><div class="ctrl-label-row"><span class="ctrl-label">CFG scale</span><span class="ctrl-val">${shot.cfg_scale == null ? "model default" : Number(shot.cfg_scale).toFixed(2)}</span></div><input class="ds-field-input" data-shot-setting="cfg_scale" type="number" min="0" max="1" step="0.05" value="${shot.cfg_scale == null ? "" : esc(String(shot.cfg_scale))}" placeholder="Model default"></div>` : "";
+    const negativeNote = info ? `<div class="ctrl-group"><div class="ctrl-label">Negative prompt</div><div class="ref-note">${info.supports_negative_prompt === false ? `${esc(info.label || engine)} takes no negative prompt.` : (String(shot.negative_prompt || "").trim() ? `Sent: \u201c${esc(String(shot.negative_prompt).trim().slice(0, 80))}\u201d` : "Empty. Set it in the Prompt section of the shot editor.")}</div></div>` : "";
+    const blocker = drops.length
+      ? `<div class="ds-blocker"><div class="ds-blocker-title">\u26a0 Render blocked</div><ul>${drops.map((d) => `<li>${esc(d.what)} \u2014 ${esc(d.why)}</li>`).join("")}</ul>${(plan.suggestions || []).length ? `<div class="ds-blocker-sub">Engines that take everything attached:</div><div class="ds-suggest-list">${plan.suggestions.map((sg) => `<button type="button" class="ds-shot-mini" data-suggest-engine="${esc(sg.id)}" title="${esc(sg.id)}${sg.key_ready ? "" : " \u00b7 needs a key in Settings"}">${esc(sg.label)} \u00b7 ${esc(sg.provider)}${sg.key_ready ? "" : " (no key)"}</button>`).join("")}</div><div class="ref-note">Click one to set it as this shot's engine. Nothing switches on its own.</div>` : `<div class="ref-note">No engine in the catalog takes all of this together. Detach what will not be sent, or change the input mode.</div>`}</div>`
+      : "";
     host.innerHTML = `
       <div class="ctrl-group video-settings-summary">
         <div class="ctrl-label">Shot</div>
@@ -1561,19 +1615,36 @@
       ${resolutions.length ? `<div class="ctrl-group"><div class="ctrl-label">Resolution</div><select class="ds-field-input" data-shot-setting="resolution"><option value="">Model default (${esc(String(resolutions[0]))})</option>${resolutions.map((r) => `<option value="${esc(String(r))}" ${String(r) === String(shot.resolution || "") ? "selected" : ""}>${esc(String(r))}</option>`).join("")}</select></div>` : ""}
       ${info && info.supports_aspect_ratio === false ? "" : `<div class="ctrl-group"><div class="ctrl-label">Aspect ratio</div><select class="ds-field-input" data-shot-setting="aspect_ratio"><option value="">Project default${project.settings && project.settings.aspect_ratio ? ` (${esc(project.settings.aspect_ratio)})` : ""}</option>${aspects.map((a) => `<option value="${esc(String(a))}" ${String(a) === String(shot.aspect_ratio || "") ? "selected" : ""}>${esc(String(a))}</option>`).join("")}</select></div>`}
       ${supportsAudio ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="generate_audio" ${shot.generate_audio ? "checked" : ""}> <span>Generate audio</span></label></div>` : (info ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><div class="ref-note">${esc(info.label || engine)} does not generate audio.</div></div>` : "")}
-      <div class="ctrl-group"><div class="ctrl-label">Reference tray</div><div class="ref-note">${esc(summary.join(" \u00b7 "))}. Attach in the Elements and Assets sections of the shot editor; order there is the reference order.</div></div>
-      <div class="ctrl-group"><div class="ref-note">Only the four settings above and the engine are per shot. Seed, CFG, negative prompt and multi-shot lists stay in the Video workspace for now.</div></div>`;
+      ${modeControl}
+      ${seedControl}
+      ${cfgControl}
+      ${negativeNote}
+      ${blocker}
+      <div class="ctrl-group"><div class="ctrl-label">Reference tray</div><div class="ref-note${drops.length ? " is-blocked" : ""}">${esc(summary.join(" \u00b7 "))}. Attach in the Elements and Assets sections of the shot editor; order there is the reference order.</div></div>
+      <div class="ctrl-group"><div class="ref-note">Everything here is per shot and saved on the row. Multi-shot prompt lists stay in the Video workspace.</div></div>`;
+    host.querySelectorAll("[data-suggest-engine]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          const payload = await api(`/api/shots/${shot.id}`, { method: "PATCH", body: { engine: button.dataset.suggestEngine } });
+          applyShotUpdate(payload.shot);
+          renderEditor();
+          renderShotSettingsPanel();
+          flashSaved("Engine set");
+        } catch (error) { setStatusLine(error.message || "Could not set the engine.", "error"); }
+      });
+    });
     host.querySelectorAll("[data-shot-setting]").forEach((input) => {
       input.addEventListener("change", async () => {
         const key = input.dataset.shotSetting;
         let value = input.type === "checkbox" ? input.checked : input.value;
-        if (key === "duration_seconds" && value === "") value = null;
+        if ((key === "duration_seconds" || key === "seed" || key === "cfg_scale") && value === "") value = null;
         const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
         if (!locked.includes(key)) locked.push(key);
         try {
           const payload = await api(`/api/shots/${shot.id}`, { method: "PATCH", body: { [key]: value, locked_fields: locked } });
           const index = shots.findIndex((item) => item.id === payload.shot.id);
           if (index >= 0) shots[index] = payload.shot;
+          invalidateRenderPlan(payload.shot.id);
           renderList();
           renderEditor();
           renderShotSettingsPanel();
@@ -1647,6 +1718,7 @@
       const result = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { [field]: payload.proposal, locked_fields: locked } });
       const index = shots.findIndex((item) => item.id === result.shot.id);
       if (index >= 0) shots[index] = result.shot;
+      invalidateRenderPlan(result.shot.id);
       delete compileProposals[`${shotId}:${field}`];
       renderList();
       renderEditor();
@@ -1697,7 +1769,7 @@
       return `<div class="ds-take${take.approved ? " is-approved" : ""}${failed ? " is-failed" : ""}" data-take="${take.id}">
         <div class="ds-take-thumb">${thumb}${take.approved ? `<span class="ds-card-approved" title="Approved">\u2713</span>` : ""}</div>
         <div class="ds-take-meta">
-          <span class="ds-take-cost">$${Number(take.cost || 0).toFixed(2)}</span>
+          <span class="ds-take-cost${take.cost_status === "unknown" ? " is-unknown" : ""}" title="${take.cost_status === "unknown" ? "No published rate for this engine in the studio table" : (take.cost_status === "known" ? "From the published per-second rate" : "")}">${take.cost_status === "unknown" ? "cost unknown" : "$" + Number(take.cost || 0).toFixed(2)}</span>
           <span class="ds-take-engine" title="${esc(take.engine)}">${esc(engineLabel || "\u2014")}</span>
           <span class="ds-take-time">${esc(formatTakeTime(take.completed_at || take.created_at))}</span>
         </div>
@@ -1743,6 +1815,7 @@
 
   function applyShotUpdate(updated) {
     if (!updated) return;
+    invalidateRenderPlan(updated.id);
     const index = shots.findIndex((item) => item.id === updated.id);
     if (index >= 0) shots[index] = updated;
     renderList();
@@ -1804,10 +1877,22 @@
     });
   }
 
-  async function renderShot(shotId) {
+  // Task 19: a reduced payload only after the user reads exactly what is dropped and confirms.
+  function confirmRenderAnyway(shotId) {
+    const shot = findShot(shotId);
+    const drops = shot ? planDrops(shot) : [];
+    if (!shot || !drops.length) return;
+    const host = $("dsReadyHint");
+    if (!host) return;
+    host.innerHTML = `Send without ${esc(drops.map((d) => d.what).join(" and "))}? <button type="button" class="ds-shot-mini ds-render-anyway-confirm" id="dsRenderAnywayYes">Yes, render with these dropped</button> <button type="button" class="ds-shot-mini" id="dsRenderAnywayNo">No</button>`;
+    $("dsRenderAnywayYes")?.addEventListener("click", () => renderShot(shot.id, { allowPartial: true }));
+    $("dsRenderAnywayNo")?.addEventListener("click", () => refreshEditorState(shot));
+  }
+
+  async function renderShot(shotId, extra = {}) {
     const shot = findShot(shotId);
     if (!shot || activeRenders[String(shotId)]) return;
-    const body = {};   // Task 18: the shot's engine is the engine; nothing from the Generator rides along
+    const body = { ...extra };   // Task 18: the shot's engine is the engine; nothing from the Generator rides along
     if (shot.chain_from_previous) {
       const index = shots.findIndex((item) => item.id === shot.id);
       const prev = index > 0 ? shots[index - 1] : null;
@@ -1831,7 +1916,9 @@
       setStatusLine(`${shot.slug}: render started.`, "success");
       pollRender(shotId, payload.job && payload.job.jobId);
     } catch (error) {
+      invalidateRenderPlan(shotId);
       setStatusLine(error.message || "Render failed to start.", "error");
+      refreshEditorState(shot);
     }
   }
 
@@ -2077,6 +2164,7 @@
       const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { [listKey]: values, locked_fields: locked } });
       const index = shots.findIndex((item) => item.id === payload.shot.id);
       if (index >= 0) shots[index] = payload.shot;
+      invalidateRenderPlan(payload.shot.id);
       if (String(selectedId) === String(shotId)) renderEditor();
       flashSaved("Saved");
     } catch (error) {
@@ -2128,6 +2216,7 @@
       const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { [fieldKey]: value, locked_fields: locked } });
       const index = shots.findIndex((item) => item.id === payload.shot.id);
       if (index >= 0) shots[index] = payload.shot;
+      invalidateRenderPlan(payload.shot.id);
       // Re-render the list (slug/scene/status may show there) but keep focus in the editor.
       renderList();
       const wrap = document.querySelector(`[data-field-wrap="${fieldKey}"]`);
@@ -2157,6 +2246,7 @@
       const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { locked_fields: next } });
       const index = shots.findIndex((item) => item.id === payload.shot.id);
       if (index >= 0) shots[index] = payload.shot;
+      invalidateRenderPlan(payload.shot.id);
       renderEditor();
       flashSaved(next.includes(fieldKey) ? "Locked" : "Unlocked");
     } catch (error) {

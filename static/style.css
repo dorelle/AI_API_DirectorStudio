@@ -10135,3 +10135,16 @@ optgroup.opt-needs-key, option.opt-needs-key { color: var(--text-dim); font-styl
 .pub-picker-upload-status.success { color: var(--green); }
 .pub-picker-upload-status.error { color: var(--red); }
 .pub-picker-body.is-drop { outline: 2px dashed rgba(var(--accent-rgb), 0.7); outline-offset: -6px; border-radius: 10px; }
+
+/* ---- Task 19: blocked renders, problem states ---- */
+.ds-section-problem { display: inline-flex; align-items: center; margin-left: 8px; font-size: 11px; font-weight: 700; color: var(--red); border: 1px solid rgba(255, 80, 80, 0.5); border-radius: 999px; padding: 1px 8px; }
+.ds-ready-hint.is-blocked { color: var(--red); font-weight: 600; }
+.ds-render-anyway { margin-left: 6px; color: var(--text-dim); }
+.ds-render-anyway-confirm { color: var(--red); border-color: rgba(255, 80, 80, 0.6); }
+.ds-blocker { border: 1px solid rgba(255, 80, 80, 0.6); background: rgba(255, 80, 80, 0.07); border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 12px; }
+.ds-blocker-title { font-weight: 700; color: var(--red); margin-bottom: 4px; }
+.ds-blocker ul { margin: 4px 0 6px 16px; padding: 0; }
+.ds-blocker-sub { font-weight: 600; margin-top: 6px; }
+.ds-suggest-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.ref-note.is-blocked { color: var(--red); }
+.ds-take-cost.is-unknown { color: var(--text-dim); font-style: italic; }
