@@ -54,6 +54,12 @@
     width: 100%;
   }
 
+  .asset-page-browser .gallery-toolbar-size { display: flex; align-items: center; gap: 10px; }
+  .asset-page-browser .gallery-toolbar-size .gallery-rail-size-title,
+  .asset-page-browser .gallery-toolbar-size .gallery-rail-size-label { display: inline; }
+  .asset-page-browser .gallery-rail-size-control-inline { display: flex; flex-direction: row; align-items: center; gap: 10px; max-width: 420px; }
+  .asset-density-label { min-width: 52px; }
+
   .asset-browser-grid {
     display: grid;
     width: 100%;
@@ -659,8 +665,8 @@
       <div class="gallery-toolbar-size">
         <span class="gallery-rail-size-title">Preview Size</span>
         <div class="gallery-rail-size-control-inline">
-          <span class="gallery-rail-size-label" id="assetDensityLabel">Medium</span>
-          <input type="range" min="1" max="3" step="1" value="2" class="gallery-rail-size-slider" id="assetDensitySlider" oninput="setAssetDensity(this.value)" onchange="setAssetDensity(this.value)">
+          <span class="gallery-rail-size-label asset-density-label" id="assetDensityLabel">250 px</span>
+          <input type="range" min="150" max="420" step="10" value="250" class="gallery-rail-size-slider" id="assetDensitySlider" title="Card width" oninput="setAssetDensity(this.value)" onchange="setAssetDensity(this.value)">
         </div>
       </div>
     </div>
@@ -745,12 +751,16 @@ const ASSET_FILTER_DEFAULTS = {
   shot: "all",
   filename: "",
 };
-const ASSET_DENSITY_LABELS = { 1: "Large", 2: "Medium", 3: "Small" };
+// Card width in px. The slider is continuous (150-420, step 10); the three old presets map onto it.
+const ASSET_DENSITY_MIN = 150;
+const ASSET_DENSITY_MAX = 420;
+const ASSET_DENSITY_DEFAULT = 250;
+const ASSET_DENSITY_LEGACY = { 1: 320, 2: 250, 3: 180 };
 
 let assetItems = [];
 let assetSelectionMode = false;
 let assetSelectedIds = new Set();
-let assetDensityLevel = 2;
+let assetDensityLevel = ASSET_DENSITY_DEFAULT;
 let assetLightboxItem = null;
 let assetLoadError = "";
 const ASSET_SVG_FOLDER_OPEN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1"/><path d="M3 11h18"/><path d="M15 13h6"/><path d="m18 10 3 3-3 3"/><path d="M4 20h9a2 2 0 0 0 2-2v-5"/></svg>';
@@ -950,10 +960,10 @@ async function setAssetSource(kind, options = {}) {
     }
   }
   try {
-    const savedDensity = parseInt(localStorage.getItem(getAssetDensityStorageKey()) || "2", 10);
+    const savedDensity = parseInt(localStorage.getItem(getAssetDensityStorageKey()) || String(ASSET_DENSITY_DEFAULT), 10);
     setAssetDensity(savedDensity, false);
   } catch (e) {
-    setAssetDensity(2, false);
+    setAssetDensity(ASSET_DENSITY_DEFAULT, false);
   }
   resetAssetFilters();
   syncAssetFilterToggleButton();
@@ -1619,18 +1629,21 @@ function getFilteredAssetItems() {
 function syncAssetGridLayout() {
   const grid = document.getElementById("assetGrid");
   if (!grid) return;
-  const targetWidth = assetDensityLevel === 1 ? 320 : assetDensityLevel === 2 ? 250 : 180;
+  const targetWidth = assetDensityLevel;
   const width = Math.max(grid.clientWidth, 1);
-  const safeWidth = Math.max(150, Math.min(targetWidth, width));
+  const safeWidth = Math.max(ASSET_DENSITY_MIN, Math.min(targetWidth, width));
   grid.style.setProperty("--asset-card-width", `${safeWidth}px`);
 }
 
 function setAssetDensity(level, persist = true) {
-  assetDensityLevel = Math.max(1, Math.min(3, parseInt(level, 10) || 2));
+  let wanted = parseInt(level, 10);
+  if (ASSET_DENSITY_LEGACY[wanted]) wanted = ASSET_DENSITY_LEGACY[wanted];   // a stored 1 / 2 / 3 from before
+  if (!Number.isFinite(wanted)) wanted = ASSET_DENSITY_DEFAULT;
+  assetDensityLevel = Math.max(ASSET_DENSITY_MIN, Math.min(ASSET_DENSITY_MAX, wanted));
   const slider = document.getElementById("assetDensitySlider");
   const label = document.getElementById("assetDensityLabel");
   if (slider) slider.value = String(assetDensityLevel);
-  if (label) label.textContent = ASSET_DENSITY_LABELS[assetDensityLevel] || "Medium";
+  if (label) label.textContent = `${assetDensityLevel} px`;
   if (persist) {
     try { localStorage.setItem(getAssetDensityStorageKey(), String(assetDensityLevel)); } catch (e) {}
   }
@@ -2245,10 +2258,10 @@ window.addEventListener("resize", syncAssetGridLayout);
   } catch (e) {}
   syncAssetFilterToggleButton();
   try {
-    const savedDensity = parseInt(localStorage.getItem(getAssetDensityStorageKey()) || "2", 10);
+    const savedDensity = parseInt(localStorage.getItem(getAssetDensityStorageKey()) || String(ASSET_DENSITY_DEFAULT), 10);
     setAssetDensity(savedDensity, false);
   } catch (e) {
-    setAssetDensity(2, false);
+    setAssetDensity(ASSET_DENSITY_DEFAULT, false);
   }
   bindAssetFilters();
   populateAssetFilterOptions();
