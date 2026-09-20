@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919d"></script>
-  <script defer src="/static/director_shots.js?v=20260919n"></script>
+  <script defer src="/static/director_shots.js?v=20260920a"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -250,7 +250,7 @@
     if (creationControls) creationControls.style.display = creationActive ? '' : 'none';
     if (videoControls) videoControls.style.display = videoActive ? '' : 'none';
     if (typeof window.setSettingsTab === 'function') {
-      window.setSettingsTab(videoActive ? 'video' : 'image', false);
+      window.setSettingsTab(videoActive ? 'video' : (shotActive ? 'shot' : 'image'), false);
     }
     if (videoActive && typeof window.syncVideoModeUi === 'function') {
       window.requestAnimationFrame(() => window.syncVideoModeUi());
@@ -487,6 +487,7 @@
     <div class="settings-tabs toggle-tabs" role="tablist" aria-label="Settings panel">
       <button class="tab-btn active" type="button" id="settingsTabImageBtn" role="tab" aria-selected="true" onclick="setSettingsTab('image', true)">Image</button>
       <button class="tab-btn" type="button" id="settingsTabVideoBtn" role="tab" aria-selected="false" onclick="setSettingsTab('video', true)">Video</button>
+      <button class="tab-btn" type="button" id="settingsTabShotBtn" role="tab" aria-selected="false" onclick="setSettingsTab('shot', true)" style="display:none">Shot</button>
     </div>
 
     <div class="settings-tab-pane" id="settingsPaneImage" role="tabpanel">
@@ -1021,6 +1022,8 @@
         </div>
       </div>
     </div><!-- /settingsPaneVideo -->
+
+    <div class="settings-tab-pane" id="settingsPaneShot" role="tabpanel" style="display:none"></div><!-- Task 18: filled by director_shots.js -->
 
   </aside>
 
@@ -1890,8 +1893,12 @@
       <div class="pub-picker-source-tabs">
         <button class="pub-picker-source-btn active" id="pickerSourceLovedBtn" type="button" onclick="switchLovedPickerSource('loved')">Loved</button>
         <button class="pub-picker-source-btn" id="pickerSourceReferencesBtn" type="button" onclick="switchLovedPickerSource('references')">References</button>
+        <label class="pub-picker-upload-btn" id="pickerUploadBtn" style="display:none" title="Upload images from disk into the reference library (character sheets, portraits, plates). They stay available to every shot.">
+          &#8593; Upload<input type="file" id="pickerUploadInput" accept="image/*" multiple style="display:none" onchange="uploadIntoReferenceLibrary(this.files); this.value='';">
+        </label>
+        <span class="pub-picker-upload-status" id="pickerUploadStatus"></span>
       </div>
-      <div class="pub-picker-body" id="pubPickerBody">
+      <div class="pub-picker-body" id="pubPickerBody" ondragover="onPickerDragOver(event)" ondragleave="onPickerDragLeave(event)" ondrop="onPickerDrop(event)">
         <div class="pub-picker-loading" id="pubPickerLoading">
           <div class="spinner"></div> Loading...
         </div>
@@ -3560,12 +3567,20 @@ function syncVideoModeUi() {
 let settingsTabManual = "";
 
 function setSettingsTab(tab, manual = false) {
-  const wanted = tab === "video" ? "video" : "image";
+  const wanted = tab === "video" ? "video" : (tab === "shot" ? "shot" : "image");
   const imageBtn = document.getElementById("settingsTabImageBtn");
   const videoBtn = document.getElementById("settingsTabVideoBtn");
+  const shotBtn = document.getElementById("settingsTabShotBtn");
   const imagePane = document.getElementById("settingsPaneImage");
   const videoPane = document.getElementById("settingsPaneVideo");
+  const shotPane = document.getElementById("settingsPaneShot");
   if (!imageBtn || !videoBtn || !imagePane || !videoPane) return;
+  // Task 18: the Shot tab exists while the workspace is in Shot mode (film project, shot selected)
+  const shotMode = String(document.getElementById("promptBar")?.dataset.promptMode || "") === "shot";
+  if (shotBtn) shotBtn.style.display = shotMode || wanted === "shot" ? "" : "none";
+  if (shotBtn) { shotBtn.classList.toggle("active", wanted === "shot"); shotBtn.setAttribute("aria-selected", wanted === "shot" ? "true" : "false"); }
+  if (shotPane) shotPane.style.display = wanted === "shot" ? "" : "none";
+  if (wanted === "shot" && typeof window.renderShotSettingsPanel === "function") window.requestAnimationFrame(() => window.renderShotSettingsPanel());
   if (manual) {
     settingsTabManual = wanted;
   } else {
@@ -7017,6 +7032,56 @@ function syncLovedPickerSourceUi() {
   const refsBtn = document.getElementById("pickerSourceReferencesBtn");
   if (lovedBtn) lovedBtn.classList.toggle("active", pickerSource === "loved");
   if (refsBtn) refsBtn.classList.toggle("active", pickerSource === "references");
+  // Task 18: upload lives on the References tab only. Loved is for generated work the user marked.
+  const uploadBtn = document.getElementById("pickerUploadBtn");
+  if (uploadBtn) uploadBtn.style.display = pickerSource === "references" ? "" : "none";
+}
+
+// ---- Task 18: upload into the reference library from the picker (same archive the Assets drop target uses) ----
+function setPickerUploadStatus(text, tone = "") {
+  const el = document.getElementById("pickerUploadStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "pub-picker-upload-status" + (tone ? " " + tone : "");
+}
+async function uploadIntoReferenceLibrary(files) {
+  const images = Array.from(files || []).filter((file) => file && file.type && file.type.startsWith("image/"));
+  if (!images.length) { setPickerUploadStatus("Drop image files (png, jpg, webp).", "error"); return; }
+  if (pickerSource !== "references") await switchLovedPickerSource("references");
+  setPickerUploadStatus(`Uploading ${images.length} image(s)\u2026`);
+  const added = [];
+  for (const file of images) {
+    try {
+      const data = await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",")[1] || ""); r.onerror = reject; r.readAsDataURL(file); });
+      const resp = await fetch("/api/reference-archive/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data, mime_type: file.type || "image/png", name: file.name }) });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok || !payload.ok) throw new Error(payload.error || `HTTP ${resp.status}`);
+      added.push(payload.url);
+    } catch (error) {
+      setPickerUploadStatus(`${file.name}: ${error.message || "upload failed"}`, "error");
+    }
+  }
+  await loadLovedPickerSource("references");   // the library re-reads; no page reload
+  // uploaded images come in pre-selected, so "Add selected" attaches them in the same pass
+  added.forEach((url) => {
+    const card = Array.from(document.querySelectorAll("#pubPickerGrid .picker-card")).find((el) => el.dataset.url === url);
+    if (card && !pickerSelected.has(url)) card.click();
+  });
+  if (added.length) setPickerUploadStatus(`${added.length} uploaded and selected`, "success");
+}
+function onPickerDragOver(event) {
+  if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes("Files")) return;
+  event.preventDefault();
+  document.getElementById("pubPickerBody")?.classList.add("is-drop");
+}
+function onPickerDragLeave(event) {
+  document.getElementById("pubPickerBody")?.classList.remove("is-drop");
+}
+function onPickerDrop(event) {
+  document.getElementById("pubPickerBody")?.classList.remove("is-drop");
+  if (!event.dataTransfer || !event.dataTransfer.files || !event.dataTransfer.files.length) return;
+  event.preventDefault();
+  uploadIntoReferenceLibrary(event.dataTransfer.files);
 }
 
 function renderLovedPickerList(list, maxRef) {
@@ -15399,6 +15464,7 @@ async function wizAnalyzeImage(b64, mimeType, dataUrl) {
         wizLog("info", `Image OK: ${ii.orig_w}x${ii.orig_h}px -> converted to JPG 90%`);
     }
     if (data.raw_text) wizLog("info", "Raw text from Gemini:", data.raw_text);
+    if (!data.ok && data.raw) wizLog("warn", "What came back (not parseable as JSON" + (data.finish_reason ? ", finish reason " + data.finish_reason : "") + "):", data.raw);
     if (data.usage)    wizLog("info", `Token: ${data.usage.input_tokens} input / ${data.usage.output_tokens} output - cost $${(data.usage.cost_usd||0).toFixed(7)}`);
     if (!data.ok) throw new Error(data.error || "Analysis error");
     wizAnalyzed = data.metadata;
@@ -15406,7 +15472,9 @@ async function wizAnalyzeImage(b64, mimeType, dataUrl) {
   } catch(e) {
     wizAnalyzed = {};
     wizLog("error", "Analysis error: " + e.message);
-    showError("Analysis failed: " + e.message + " - fill in fields manually.");
+    const wrap = document.getElementById("wizDebugWrap");
+    if (wrap && wrap.style.display === "none") wizToggleLog();   // the reply is in the log; show it
+    showError("Automatic analysis did not return usable data. Nothing is broken: the fields below are ready to fill in by hand, and the debug log shows exactly what Gemini sent back. " + e.message);
   }
 
   // Show detected values in the scan panel, then pause briefly for feedback

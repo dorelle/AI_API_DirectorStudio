@@ -15,6 +15,8 @@
   const STATUS_LABELS = { empty: "Empty", queued: "Queued", rendering: "Rendering", done: "Done", rejected: "Rejected", failed: "Failed" };
   const EXPOSURE_CLASSES = ["FLASH", "POP", "DETAIL"];
   const FIELD_GROUPS = [
+    // Task 18: takes first. It is the only section whose contents change while the user waits.
+    { key: "takes", label: "Takes", step: 7, takes: true },
     // Task 17: the parts of the ID. Editing them here relabels the shot; the stored ID never changes.
     { key: "identity", label: "ID", hint: "Film code, scene number and setup are fixed at creation. Changing the class or name here does not change the ID.", fields: [
       { key: "exposure_class", label: "Exposure class", type: "select", options: EXPOSURE_CLASSES },
@@ -53,7 +55,6 @@
       { key: "chain_from_previous", label: "Chain from previous shot's last frame", type: "checkbox" },
       { key: "engine", label: "Engine (video model)", type: "engine" },
     ] },
-    { key: "takes", label: "Takes", step: 7, takes: true },
     { key: "notes", label: "Notes", hint: "Anything the crew should know.", fields: [
       { key: "status", label: "Status", type: "select", options: Object.keys(STATUS_LABELS) },
       { key: "note", label: "Note", type: "textarea" },
@@ -92,6 +93,12 @@
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const isFilm = () => Boolean(project && project.type === "film");
   const findShot = (id) => shots.find((shot) => String(shot.id) === String(id)) || null;
+  // Task 18: what to print for a shot's scene. The scene record first; the old free-text `scene` only when there is none.
+  function sceneLabelOf(shot, empty = "") {
+    const scene = shot && shot.scene_id ? (scenes.find((item) => String(item.id) === String(shot.scene_id)) || null) : null;
+    if (scene) return `${scene.slug}${scene.name && scene.name !== scene.slug ? " \u00b7 " + scene.name : ""}`;
+    return String((shot && shot.scene) || "") || empty;
+  }
 
   function readStorage(key, fallback) {
     try { const raw = localStorage.getItem(key); return raw === null ? fallback : raw; } catch (e) { return fallback; }
@@ -218,7 +225,7 @@
       <div class="ds-shot-row${String(shot.id) === String(selectedId) ? " is-selected" : ""}" draggable="true" data-id="${shot.id}" title="${esc(shot.slug)} \u00b7 ${esc(STATUS_LABELS[shot.status] || shot.status)}${shot.takes && shot.takes.approved ? " \u00b7 approved" : ""}">
         <span class="ds-shot-status" data-status="${esc(listStatus(shot))}" aria-label="${esc(listStatus(shot))}"></span>
         <span class="ds-shot-slug">${esc(shot.slug)}</span>
-        <span class="ds-shot-scene">${esc(shot.scene || "")}</span>
+        <span class="ds-shot-scene">${esc(sceneLabelOf(shot))}</span>
         <span class="ds-shot-row-actions">
           <button type="button" class="ds-shot-mini" data-action="insert" title="Insert a shot after this one">+</button>
           <button type="button" class="ds-shot-mini ds-shot-mini-danger" data-action="delete" title="Delete this shot">&times;</button>
@@ -322,6 +329,7 @@
     if (project) writeStorage(STORAGE_KEYS.selected + ":" + project.id, selectedId);
     renderList();
     renderEditor();
+    renderShotSettingsPanel();
     if (selectedId && typeof window.setPromptMode === "function") window.setPromptMode("shot");
     const card = document.querySelector(`.ds-card[data-id="${selectedId}"]`);
     if (card && typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
@@ -466,7 +474,7 @@
       const selected = String(shot.id) === String(selectedId);
       const frame = hasVisual
         ? visualMarkup(visual, `${shot.slug} ${visual.kind === "take" ? "take" : "first frame"}`)
-        : `<div class="ds-card-placeholder"><span class="ds-shot-slug">${esc(shot.slug)}</span>${esc(shot.scene || "No scene yet")}<span class="ds-card-placeholder-hint">No frame</span></div>`;
+        : `<div class="ds-card-placeholder"><span class="ds-shot-slug">${esc(shot.slug)}</span>${esc(sceneLabelOf(shot, "No scene yet"))}<span class="ds-card-placeholder-hint">No frame</span></div>`;
       const frameActions = url
         ? `<button type="button" class="ds-card-btn" data-card-action="pick">Replace</button><button type="button" class="ds-card-btn" data-card-action="clear">Clear</button>`
         : `<button type="button" class="ds-card-btn" data-card-action="pick">Pick frame</button>`;
@@ -484,7 +492,7 @@
           ${rendering ? `<div class="ds-card-rendering"><span class="spinner"></span>Rendering\u2026</div>` : ""}
           <div class="ds-card-actions">${renderAction}${frameActions}</div>
         </div>
-        ${hasVisual ? `<div class="ds-card-foot"><span class="ds-shot-slug">${esc(shot.slug)}</span><span class="ds-shot-scene">${esc(shot.scene || "")}</span></div>` : ""}
+        ${hasVisual ? `<div class="ds-card-foot"><span class="ds-shot-slug">${esc(shot.slug)}</span><span class="ds-shot-scene">${esc(sceneLabelOf(shot))}</span></div>` : ""}
       </div>`;
     }).join("");
     strip.innerHTML = `
@@ -665,7 +673,10 @@
   function sectionStateMarkup(shot, group) {
     if (group.style) return shot.style_id ? `<span class="ds-section-check${shot.style_enabled ? "" : " is-off"}" title="${shot.style_enabled ? "Applied" : "Attached, switched off"}">${shot.style_enabled ? "\u2713" : "off"}</span>` : "";
     if (group.list) return `<span class="ds-section-count">${(shot[group.list] || []).length}</span>`;
-    if (group.takes) return `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>`;
+    if (group.takes) {
+      const live = shot.takes && shot.takes.rendering;
+      return `<span class="ds-section-count">${(shot.takes && shot.takes.count) || 0}</span>${live ? `<span class="ds-section-live"><span class="spinner"></span>Rendering\u2026</span>` : ""}`;
+    }
     return sectionHasContent(shot, group) ? `<span class="ds-section-check" title="Has content">\u2713</span>` : "";
   }
 
@@ -673,10 +684,7 @@
     const engine = String(shot.engine || "").trim();
     if (engine && videoModels && videoModels[engine]) return true;
     if (engine && !videoModels) return true; // catalog not loaded yet; the server checks
-    if (typeof window.getCurrentVideoSelection === "function") {
-      try { return Boolean(window.getCurrentVideoSelection().modelId); } catch (e) { return false; }
-    }
-    return false;
+    return false;   // Task 18: no fallback to the Generator's selection
   }
 
   // Mirrors the server's checks in build_shot_render_payload so the reason shows before the click.
@@ -684,7 +692,7 @@
     const reasons = [];
     if (shot.takes && shot.takes.rendering) return { ok: false, rendering: true, reasons: ["Rendering\u2026"] };
     if (!hasText(shot.prompt)) reasons.push("Needs a prompt");
-    if (!engineResolved(shot)) reasons.push("No engine selected");
+    if (!engineResolved(shot)) reasons.push("No engine on the shot (Shot settings panel)");
     if (shot.chain_from_previous) {
       const index = shots.findIndex((item) => item.id === shot.id);
       const prev = index > 0 ? shots[index - 1] : null;
@@ -757,6 +765,8 @@
     } else if (field.type === "checkbox") {
       control = `<label class="ds-field-check"><input type="checkbox" data-field="${field.key}" ${value ? "checked" : ""}> <span>${esc(field.label)}</span></label>`;
     } else if (field.type === "engine") {
+      control = engineSelectMarkup(String(value || ""), `class="ds-field-input" data-field="${field.key}"`);
+    } else if (field.type === "__engine_inline__") {
       const current = String(value || "");
       const groups = {};
       Object.entries(videoModels || {}).forEach(([id, info]) => {
@@ -811,7 +821,7 @@
       const filled = sectionHasContent(shot, group);
       const hint = (!group.list && !group.takes && !filled && group.hint) ? `<div class="ds-section-hint">${esc(group.hint)}</div>` : "";
       return `
-      <details class="ds-section${group.list ? " ds-section-list" : ""}${filled ? " has-content" : " is-empty"}" data-section="${group.key}" ${isSectionOpen(group.key) ? "open" : ""}>
+      <details class="ds-section${group.list ? " ds-section-list" : ""}${filled ? " has-content" : " is-empty"}${group.takes && shot.takes && shot.takes.rendering ? " is-live" : ""}" data-section="${group.key}" ${isSectionOpen(group.key) || (group.takes && shot.takes && shot.takes.rendering) ? "open" : ""}>
         <summary>${group.step ? `<span class="ds-step">${group.step}</span>` : ""}${esc(group.label)}${sectionStateMarkup(shot, group)}</summary>
         ${hint}
         ${group.list ? renderAttachmentList(shot, group) : (group.takes ? renderTakesSection(shot) : (group.style ? renderStyleSection(shot) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`))}
@@ -1493,6 +1503,89 @@
     }
   }
 
+  // ---- Task 18: engine options (shared by the editor field and the Shot settings panel) ----
+  function engineSelectMarkup(current, attrs) {
+    const groups = {};
+    Object.entries(videoModels || {}).forEach(([id, info]) => {
+      const provider = String(info.provider_label || info.provider || "other");
+      (groups[provider] = groups[provider] || []).push([id, info]);
+    });
+    const keyState = (provider) => providerKeys[String((groups[provider][0] || [])[1]?.provider || "")] || null;
+    const ready = (provider) => { const st = keyState(provider); return !st || !!st.set; };
+    const providerNames = Object.keys(groups).sort((a, b) => (ready(b) - ready(a)) || a.localeCompare(b));
+    const options = providerNames.map((provider) => {
+      const ok = ready(provider);
+      const label = ok ? provider : `${provider} \u00b7 needs ${keyState(provider).needs}`;
+      return `<optgroup label="${esc(label)}"${ok ? "" : ' class="opt-needs-key"'}>${groups[provider]
+        .sort((a, b) => String(a[1].label || a[0]).localeCompare(String(b[1].label || b[0])))
+        .map(([id, info]) => `<option value="${esc(id)}" ${id === current ? "selected" : ""}${ok ? "" : ' class="opt-needs-key"'}>${esc(info.label || id)}</option>`).join("")}</optgroup>`;
+    }).join("");
+    const unknown = current && !(videoModels && videoModels[current]) ? `<option value="${esc(current)}" selected>${esc(current)} (unknown)</option>` : "";
+    return `<select ${attrs}><option value="" ${current ? "" : "selected"}>\u2014 pick an engine \u2014</option>${unknown}${options}</select>`;
+  }
+
+  // ---- Task 18: Shot settings panel (left column, Shot tab). The shot's own video settings, saved to the row. ----
+  const DEFAULT_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
+  function renderShotSettingsPanel() {
+    const host = document.getElementById("settingsPaneShot");
+    if (!host) return;
+    const shot = findShot(selectedId);
+    if (!project || !isFilm() || !shot) {
+      host.innerHTML = `<div class="video-settings-empty"><div class="video-settings-empty-title">No shot selected</div><div class="video-settings-empty-sub">Pick a shot in the Shots panel. Its engine, duration, resolution, aspect ratio and audio live here and save to the shot.</div></div>`;
+      return;
+    }
+    ensureVideoModels().then((loaded) => { if (loaded) renderShotSettingsPanel(); });
+    const engine = String(shot.engine || "");
+    const info = (videoModels && videoModels[engine]) || null;
+    const durations = info && Array.isArray(info.durations) ? info.durations : [];
+    const resolutions = info && Array.isArray(info.resolutions) ? info.resolutions : [];
+    const aspects = info && Array.isArray(info.aspect_ratios) && info.aspect_ratios.length ? info.aspect_ratios : DEFAULT_ASPECTS;
+    const supportsAudio = Boolean(info && info.supports_generate_audio);
+    const modes = info && Array.isArray(info.input_modes) ? info.input_modes : [];
+    const durationValue = shot.duration_seconds != null && shot.duration_seconds !== "" ? String(Number(shot.duration_seconds)) : "";
+    const durationControl = durations.length
+      ? `<select class="ds-field-input" data-shot-setting="duration_seconds"><option value="">Model default</option>${durations.map((d) => `<option value="${d}" ${String(d) === durationValue ? "selected" : ""}>${d}s</option>`).join("")}</select>${durationValue && !durations.map(String).includes(durationValue) ? `<div class="ref-note">Shot says ${durationValue}s; the render snaps to the nearest offered length.</div>` : ""}`
+      : `<input class="ds-field-input" data-shot-setting="duration_seconds" type="number" step="0.5" min="0" value="${esc(durationValue)}" placeholder="seconds">`;
+    const summary = [];
+    summary.push(`${(shot.elements || []).length} element(s), ${(shot.reference_assets || []).length} reference(s)${shot.style_id && shot.style_enabled ? ", style on" : ""}`);
+    summary.push(shot.first_frame ? "first frame set" : "no first frame");
+    if (info) summary.push(`model takes: ${modes.join(" / ") || "text"}${info.max_reference_images ? ` \u00b7 up to ${info.max_reference_images} reference images` : ""}`);
+    host.innerHTML = `
+      <div class="ctrl-group video-settings-summary">
+        <div class="ctrl-label">Shot</div>
+        <div class="video-settings-model-name">${esc(shot.slug)}</div>
+        <div class="video-settings-model-meta">${esc(info ? `${info.label || engine} \u00b7 ${info.provider_label || info.provider || ""}` : (engine ? engine + " (not in catalog)" : "No engine yet \u2014 the render will not start without one"))}</div>
+      </div>
+      <div class="ctrl-group"><div class="ctrl-label">Engine</div>${engineSelectMarkup(engine, 'class="ds-field-input" data-shot-setting="engine"')}</div>
+      <div class="ctrl-group"><div class="ctrl-label">Duration</div>${durationControl}</div>
+      ${resolutions.length ? `<div class="ctrl-group"><div class="ctrl-label">Resolution</div><select class="ds-field-input" data-shot-setting="resolution"><option value="">Model default (${esc(String(resolutions[0]))})</option>${resolutions.map((r) => `<option value="${esc(String(r))}" ${String(r) === String(shot.resolution || "") ? "selected" : ""}>${esc(String(r))}</option>`).join("")}</select></div>` : ""}
+      ${info && info.supports_aspect_ratio === false ? "" : `<div class="ctrl-group"><div class="ctrl-label">Aspect ratio</div><select class="ds-field-input" data-shot-setting="aspect_ratio"><option value="">Project default${project.settings && project.settings.aspect_ratio ? ` (${esc(project.settings.aspect_ratio)})` : ""}</option>${aspects.map((a) => `<option value="${esc(String(a))}" ${String(a) === String(shot.aspect_ratio || "") ? "selected" : ""}>${esc(String(a))}</option>`).join("")}</select></div>`}
+      ${supportsAudio ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="generate_audio" ${shot.generate_audio ? "checked" : ""}> <span>Generate audio</span></label></div>` : (info ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><div class="ref-note">${esc(info.label || engine)} does not generate audio.</div></div>` : "")}
+      <div class="ctrl-group"><div class="ctrl-label">Reference tray</div><div class="ref-note">${esc(summary.join(" \u00b7 "))}. Attach in the Elements and Assets sections of the shot editor; order there is the reference order.</div></div>
+      <div class="ctrl-group"><div class="ref-note">Only the four settings above and the engine are per shot. Seed, CFG, negative prompt and multi-shot lists stay in the Video workspace for now.</div></div>`;
+    host.querySelectorAll("[data-shot-setting]").forEach((input) => {
+      input.addEventListener("change", async () => {
+        const key = input.dataset.shotSetting;
+        let value = input.type === "checkbox" ? input.checked : input.value;
+        if (key === "duration_seconds" && value === "") value = null;
+        const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
+        if (!locked.includes(key)) locked.push(key);
+        try {
+          const payload = await api(`/api/shots/${shot.id}`, { method: "PATCH", body: { [key]: value, locked_fields: locked } });
+          const index = shots.findIndex((item) => item.id === payload.shot.id);
+          if (index >= 0) shots[index] = payload.shot;
+          renderList();
+          renderEditor();
+          renderShotSettingsPanel();
+          flashSaved("Saved");
+        } catch (error) {
+          setStatusLine(error.message || "Could not save.", "error");
+        }
+      });
+    });
+  }
+  window.renderShotSettingsPanel = renderShotSettingsPanel;
+
   // ---- prompt compiler (Task 15): proposal -> review -> accept writes + locks ----
   const compileProposals = {};   // `${shotId}:${field}` -> last proposal
 
@@ -1653,6 +1746,7 @@
     const index = shots.findIndex((item) => item.id === updated.id);
     if (index >= 0) shots[index] = updated;
     renderList();
+    if (typeof renderShotSettingsPanel === "function" && String(selectedId) === String(updated && updated.id)) renderShotSettingsPanel();
   }
 
   async function loadTakes(shotId) {
@@ -1713,10 +1807,7 @@
   async function renderShot(shotId) {
     const shot = findShot(shotId);
     if (!shot || activeRenders[String(shotId)]) return;
-    const body = {};
-    if (typeof window.getCurrentVideoSelection === "function") {
-      try { body.fallbackModel = window.getCurrentVideoSelection().modelId || ""; } catch (e) {}
-    }
+    const body = {};   // Task 18: the shot's engine is the engine; nothing from the Generator rides along
     if (shot.chain_from_previous) {
       const index = shots.findIndex((item) => item.id === shot.id);
       const prev = index > 0 ? shots[index - 1] : null;
@@ -1822,10 +1913,11 @@
         <button type="button" class="ds-chip-remove" data-remove="${index}" title="Remove">&times;</button>
       </div>`;
     }).join("");
-    return `<div class="ds-attachments" data-list="${group.list}">
-      <div class="ds-chip-row">${chips || `<span class="ds-chip-empty">${esc(group.empty)}</span>`}</div>
+    return `<div class="ds-attachments${group.list === "reference_assets" ? " ds-dropzone" : ""}" data-list="${group.list}">
+      <div class="ds-chip-row">${chips || `<span class="ds-chip-empty">${esc(group.empty)}${group.list === "reference_assets" ? " Drop image files here to upload." : ""}</span>`}</div>
       <div class="ds-attach-actions">
         <button type="button" class="history-filter-toggle" data-attach-add="${group.list}">${esc(group.addLabel)}</button>
+        ${group.list === "reference_assets" ? `<label class="history-filter-toggle ds-upload-btn" title="Upload an image from disk; it lands in the reference archive and attaches here">\u2191 Upload<input type="file" accept="image/*" multiple data-attach-upload="${group.list}" style="display:none"></label>` : ""}
         ${group.list === "elements" && shot.scene_id ? `<select class="ds-field-input ds-style-select" id="dsAttachCast"><option value="">+ Add cast\u2026</option>${(castCache[String(shot.scene_id)] || []).map((m) => `<option value="${m.id}">${esc(m.handle || m.character_name)} \u00b7 ${esc(m.look_name || "")}</option>`).join("")}</select>` : ""}
         <button type="button" class="ds-lock${locked ? " is-locked" : ""}" data-lock="${group.list}" title="${locked ? "Locked by hand edit \u2014 click to unlock" : "Not locked"}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="${locked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}"/></svg></button>
         <span class="ds-attach-hint">Drag to reorder \u00b7 order is the reference order</span>
@@ -1833,8 +1925,38 @@
     </div>`;
   }
 
+  async function uploadAndAttachReferences(shot, files) {
+    const images = Array.from(files || []).filter((file) => file && file.type && file.type.startsWith("image/"));
+    if (!images.length) { setStatusLine("Drop image files (png, jpg, webp).", "error"); return; }
+    setStatusLine(`Uploading ${images.length} image(s)\u2026`);
+    const values = (shot.reference_assets || []).map(asEntry);
+    for (const file of images) {
+      const data = await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",")[1] || ""); r.onerror = reject; r.readAsDataURL(file); });
+      try {
+        const payload = await api("/api/reference-archive/upload", { method: "POST", body: { data, mime_type: file.type || "image/png", name: file.name } });
+        if (!values.some((entry) => entry.ref === payload.url)) values.push({ ref: payload.url, role: "unassigned" });
+      } catch (error) {
+        setStatusLine(`${file.name}: ${error.message || "upload failed"}`, "error");
+      }
+    }
+    await saveAttachmentList(shot.id, "reference_assets", values);
+    setStatusLine(`${images.length} image(s) uploaded and attached.`, "success");
+  }
+
   function bindAttachmentLists(shot) {
     if (shot.scene_id && !castCache[String(shot.scene_id)]) loadCast(shot.scene_id);
+    document.querySelectorAll("#dsShotEditor [data-attach-upload]").forEach((input) => {
+      input.addEventListener("change", () => { uploadAndAttachReferences(shot, input.files); input.value = ""; });
+    });
+    const dropzone = document.querySelector('#dsShotEditor .ds-dropzone[data-list="reference_assets"]');
+    if (dropzone) {
+      dropzone.addEventListener("dragover", (event) => { if (event.dataTransfer && Array.from(event.dataTransfer.types || []).includes("Files")) { event.preventDefault(); dropzone.classList.add("is-drop"); } });
+      dropzone.addEventListener("dragleave", () => dropzone.classList.remove("is-drop"));
+      dropzone.addEventListener("drop", (event) => {
+        dropzone.classList.remove("is-drop");
+        if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length) { event.preventDefault(); event.stopPropagation(); uploadAndAttachReferences(shot, event.dataTransfer.files); }
+      });
+    }
     document.querySelector("#dsShotEditor #dsAttachCast")?.addEventListener("change", (event) => {
       const id = event.target.value;
       if (!id) return;

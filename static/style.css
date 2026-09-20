@@ -10117,3 +10117,21 @@ optgroup.opt-needs-key, option.opt-needs-key { color: var(--text-dim); font-styl
 /* ---- Task 17 fix: film code sits on the identity row; hint under the input ---- */
 .project-modal-hint { display: block; font-size: 10px; color: var(--text-dim); margin-top: 4px; line-height: 1.3; }
 .project-modal-identity { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+
+/* ---- Task 18: takes first + live badge, upload/drop on Assets, shot settings pane ---- */
+.ds-section-live { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; font-size: 11px; color: var(--accent); font-weight: 600; }
+.ds-section-live .spinner { width: 10px; height: 10px; border-width: 2px; }
+.ds-section.is-live > summary { border-color: rgba(var(--accent-rgb), 0.6); }
+.ds-upload-btn { cursor: pointer; }
+.ds-dropzone.is-drop { outline: 2px dashed rgba(var(--accent-rgb), 0.7); outline-offset: 4px; border-radius: 10px; }
+#settingsPaneShot .ds-field-input { width: 100%; }
+#settingsPaneShot .ds-field-check { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+
+/* ---- Task 18: upload on the picker's References tab ---- */
+.pub-picker-source-tabs { display: flex; align-items: center; gap: 8px; }
+.pub-picker-upload-btn { margin-left: auto; cursor: pointer; font-size: 12px; font-weight: 600; padding: 6px 12px; border: 1px solid rgba(var(--accent-rgb), 0.6); border-radius: 999px; color: var(--accent); background: transparent; }
+.pub-picker-upload-btn:hover { background: rgba(var(--accent-rgb), 0.1); }
+.pub-picker-upload-status { font-size: 11px; color: var(--text-dim); }
+.pub-picker-upload-status.success { color: var(--green); }
+.pub-picker-upload-status.error { color: var(--red); }
+.pub-picker-body.is-drop { outline: 2px dashed rgba(var(--accent-rgb), 0.7); outline-offset: -6px; border-radius: 10px; }

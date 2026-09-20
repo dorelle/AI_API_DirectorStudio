@@ -2389,6 +2389,10 @@ def ensure_shots_columns(conn):
         "setup":            "INTEGER",
         "exposure_class":   "TEXT NOT NULL DEFAULT ''",
         "name_slug":        "TEXT NOT NULL DEFAULT ''",
+        # Task 18: the shot's own video settings (duration_seconds and engine already exist)
+        "resolution":       "TEXT NOT NULL DEFAULT ''",
+        "aspect_ratio":     "TEXT NOT NULL DEFAULT ''",
+        "generate_audio":   "INTEGER NOT NULL DEFAULT 0",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2870,12 +2874,13 @@ SHOT_TEXT_FIELDS = (
     "shot_size", "angle", "lens", "aperture", "speed_ramp",
     "first_frame", "last_frame", "engine", "note",
     "prompt", "negative_prompt", "scene_prompt",
+    "resolution", "aspect_ratio",
 )
 # Ordered JSON arrays of ids/paths. Order is the reference order providers see.
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
 # Task 08: what each attached reference is for. Starting vocabulary; the user owns this list.
 REFERENCE_ROLES = ("unassigned", "edit_target", "character", "garment", "environment", "prop", "style")
-SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id")
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id", "generate_audio")
 SHOT_SORT_STEP = 10
 
 
@@ -2892,6 +2897,7 @@ def shot_row_to_dict(row) -> dict:
         item[key] = [_reference_entry(value) for value in item[key] if _reference_entry(value)]
     item["chain_from_previous"] = bool(item.get("chain_from_previous"))
     item["style_enabled"] = bool(item.get("style_enabled", 1)) if item.get("style_enabled") is not None else True
+    item["generate_audio"] = bool(item.get("generate_audio"))
     return item
 
 
@@ -3124,6 +3130,8 @@ def _shot_updates_from_body(body: dict) -> dict:
             updates["style_id"] = style["id"]
     if "style_enabled" in body:
         updates["style_enabled"] = 1 if body.get("style_enabled") else 0
+    if "generate_audio" in body:
+        updates["generate_audio"] = 1 if body.get("generate_audio") else 0
     if "scene_id" in body:
         raw_scene = body.get("scene_id")
         if raw_scene in (None, "", 0, "0"):
@@ -4648,13 +4656,12 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     body = body or {}
     warnings: list[str] = []
     engine = str(shot.get("engine") or "").strip()
-    fallback = str(body.get("fallbackModel") or "").strip()
-    if engine and engine not in VIDEO_MODELS_INFO:
-        warnings.append(f"Engine '{engine}' is not a known video model; using the Generator's current model.")
-        engine = ""
-    model_id = engine or (fallback if fallback in VIDEO_MODELS_INFO else "")
-    if not model_id:
-        raise ValueError("No engine set on the shot and no video model selected in the Generator.")
+    # Task 18: the shot's engine is the engine. No fallback to whatever the Generator has selected.
+    if not engine:
+        raise ValueError("This shot has no engine. Pick one in the Shot settings panel (left) or the Generation section.")
+    if engine not in VIDEO_MODELS_INFO:
+        raise ValueError(f"Engine '{engine}' is not in the video catalog. Pick another in the Shot settings panel.")
+    model_id = engine
     model_info = VIDEO_MODELS_INFO[model_id]
     modes = [str(mode).strip().lower() for mode in (model_info.get("input_modes") or [])]
 
@@ -4754,6 +4761,25 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     render_scene = get_scene(shot.get("scene_id")) if shot.get("scene_id") else None
     if render_scene:
         payload["assetScene"] = render_scene["slug"]
+    # Task 18: the shot's own video settings win over the defaults above when the model takes them
+    shot_resolution = str(shot.get("resolution") or "").strip()
+    if shot_resolution:
+        allowed_res = [str(x) for x in (model_info.get("resolutions") or [])]
+        if not allowed_res or shot_resolution in allowed_res:
+            payload["resolution"] = shot_resolution
+        else:
+            warnings.append(f"Resolution {shot_resolution} is not offered by {model_info.get('label', model_id)}; using {payload['resolution']}.")
+    shot_aspect = str(shot.get("aspect_ratio") or "").strip()
+    if shot_aspect:
+        allowed_ar = [str(x) for x in (model_info.get("aspect_ratios") or [])]
+        if not allowed_ar or shot_aspect in allowed_ar:
+            payload["aspectRatio"] = shot_aspect
+        else:
+            warnings.append(f"Aspect ratio {shot_aspect} is not offered by {model_info.get('label', model_id)}; using {payload['aspectRatio']}.")
+    if model_info.get("supports_generate_audio"):
+        payload["videoGenerateAudio"] = bool(shot.get("generate_audio"))
+    elif shot.get("generate_audio"):
+        warnings.append(f"{model_info.get('label', model_id)} does not generate audio; the audio setting was ignored.")
     if not payload["prompt"]:
         raise ValueError("The shot has no prompt. Write one in the Prompt section first.")
     if style and str(style.get("text") or "").strip():
@@ -10163,10 +10189,7 @@ def collect_loved_records() -> list[dict]:
 def collect_reference_archive_records() -> list[dict]:
     result = []
     seen_refs = set()
-    if not os.path.isdir(GENERATIONS_DIR):
-        return result
-
-    for mf in list_meta_files_recursive(GENERATIONS_DIR):
+    for mf in (list_meta_files_recursive(GENERATIONS_DIR) if os.path.isdir(GENERATIONS_DIR) else []):   # uploads below still list without generations
         try:
             with open(mf, encoding="utf-8") as f:
                 meta = json.load(f)
@@ -10213,6 +10236,30 @@ def collect_reference_archive_records() -> list[dict]:
                 })
         except Exception:
             pass
+    # Task 18: files uploaded straight into the archive (character sheets, plates) have no generation
+    # behind them yet; the index remembers them as uploads so the picker's References source lists them.
+    for ref_key, entry in load_reference_archive_index().items():
+        if not isinstance(entry, dict) or entry.get("source") != "upload" or ref_key in seen_refs:
+            continue
+        ref_date = str(entry.get("date") or "").strip(); filename = os.path.basename(str(entry.get("filename") or "").strip())
+        if not ref_date or not filename or not os.path.exists(os.path.join(REFERENCE_ARCHIVE_DIR, ref_date, filename)):
+            continue
+        seen_refs.add(ref_key)
+        uploaded_at = str(entry.get("uploaded_at") or "")
+        result.append({
+            "id": f"reference:{ref_date}:{filename}", "kind": "references",
+            "url": f"/reference-archive/{ref_date}/{filename}", "download_url": f"/reference-archive/{ref_date}/{filename}",
+            "date": ref_date, "filename": filename, "generated_at": uploaded_at,
+            "sortTimestamp": iso_sort_key(uploaded_at, f"{ref_date}T00:00:00"),
+            "prompt_preview": str(entry.get("name") or filename)[:120], "text": "",
+            "params": {"prompt": str(entry.get("name") or filename), "model_label": "Uploaded"},
+            "reference_name": str(entry.get("name") or ""), "source_generation_date": "", "source_generation_filename": "",
+            "delete_url": f"/api/reference-archive/{ref_date}/{filename}",
+            "folder_open_payload": {"kind": "references", "date": ref_date, "filename": filename},
+            "original_url": "", "masked_url": "", "mask_url": "", "has_mask": False,
+            "mask_edit_payload": {"kind": "references", "date": ref_date, "filename": filename},
+        })
+    result.sort(key=lambda item: str(item.get("sortTimestamp") or ""), reverse=True)
     return result
 
 
@@ -11021,6 +11068,42 @@ def api_asset_gallery(kind):
     return jsonify({"ok": True, "items": collect_asset_records(kind)})
 
 
+@app.route("/api/reference-archive/upload", methods=["POST"])
+@login_required
+def api_reference_archive_upload():
+    """Task 18: a file from disk becomes a reference-archive asset (the same place dropped style
+    images and used references already land), so a shot can attach it at once."""
+    body = request.get_json(silent=True) or {}
+    image_b64 = str(body.get("data") or "").strip()
+    if not image_b64:
+        return jsonify({"ok": False, "error": "Image data missing"}), 400
+    mime_type = str(body.get("mime_type") or "image/png").strip() or "image/png"
+    name = os.path.basename(str(body.get("name") or "reference.png"))
+    now = datetime.now()
+    try:
+        entries = build_reference_archive_entries(
+            [{"data": image_b64, "mime_type": mime_type, "name": name}],
+            now.strftime("%Y-%m-%d"),
+            now.strftime("%H%M%S%f")[:12] + "_shot_ref",
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    if not entries:
+        return jsonify({"ok": False, "error": "The image could not be archived"}), 500
+    entry = entries[0]
+    ref_hash = compute_reference_archive_file_hash(entry["date"], entry["filename"])
+    if ref_hash:   # remembered as a direct upload so the References picker lists it before any generation uses it
+        index = load_reference_archive_index()
+        current = dict(get_reference_archive_index_entry(ref_hash, index) or {})
+        current.update({"date": entry["date"], "filename": entry["filename"], "name": name, "mime_type": entry.get("mime_type") or mime_type,
+                        "source": "upload", "uploaded_at": now.isoformat()})
+        upsert_reference_archive_index_entry(ref_hash, current, index)
+        index[ref_hash]["source"] = "upload"            # the upsert keeps only the standard keys; add ours after it
+        index[ref_hash]["uploaded_at"] = now.isoformat()
+        save_reference_archive_index(index)
+    return jsonify({"ok": True, "url": f"/reference-archive/{entry['date']}/{entry['filename']}", "entry": entry})
+
+
 @app.route("/api/import-ref-image", methods=["POST"])
 @login_required
 def api_import_ref_image():
@@ -11395,14 +11478,17 @@ def run_vision_extraction(api_key: str, image_b64: str, mime_type: str, analysis
 
     result   = resp.json()
     raw_text = ""
+    finish_reason = ""
     # Estrae testo dal primo candidato con parti testo
     for candidate in result.get("candidates", []):
+        finish_reason = finish_reason or str(candidate.get("finishReason") or "")
         for part in candidate.get("content", {}).get("parts", []):
             if "text" in part:
                 raw_text = part["text"].strip()
                 break
         if raw_text:
             break
+    block_reason = str((result.get("promptFeedback") or {}).get("blockReason") or "")
 
     # Calcola costo Vision da usageMetadata (token-based)
     usage         = result.get("usageMetadata", {})
@@ -11432,7 +11518,8 @@ def run_vision_extraction(api_key: str, image_b64: str, mime_type: str, analysis
     save_config(cfg_v)
 
     if not raw_text:
-        return {"ok": False, "error": "Empty response from Gemini", "raw": str(result)[:300]}
+        why = f" (blocked: {block_reason})" if block_reason else (f" (finish reason: {finish_reason})" if finish_reason and finish_reason != "STOP" else "")
+        return {"ok": False, "error": f"Gemini returned no text{why}. Fill in the fields by hand; the debug log has the reply.", "raw": str(result)[:500], "finish_reason": finish_reason}
 
     # Parsing JSON robusto: prova diretta, poi estrai il primo { ... } block
     metadata = None
@@ -11453,8 +11540,22 @@ def run_vision_extraction(api_key: str, image_b64: str, mime_type: str, analysis
             except json.JSONDecodeError:
                 pass
 
+    if metadata is None and finish_reason == "MAX_TOKENS":
+        # Cut off mid-object: close what is open and keep the fields that arrived
+        match = re.search(r"\{[\s\S]*", cleaned)
+        if match:
+            fragment = re.sub(r",\s*\"[^\"]*\"?\s*:?\s*[^,}\]]*$", "", match.group().rstrip())
+            for tail in ("}", "]}", "\"}", "\"]}"):
+                try:
+                    metadata = json.loads(fragment + tail)
+                    break
+                except json.JSONDecodeError:
+                    continue
     if metadata is None:
-        return {"ok": False, "error": "Could not extract JSON from response", "raw": raw_text[:500]}
+        head = raw_text[:160].replace("\n", " ")
+        why = f" Gemini stopped with {finish_reason}." if finish_reason and finish_reason != "STOP" else ""
+        return {"ok": False, "error": f"The reply was not JSON{why} It began: \"{head}\" - fill in the fields by hand (full reply in the debug log).",
+                "raw": raw_text[:2000], "finish_reason": finish_reason}
     return {
         "ok": True,
         "metadata": metadata,
