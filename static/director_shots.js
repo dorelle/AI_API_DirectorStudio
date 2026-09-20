@@ -81,9 +81,18 @@
       .catch(() => { renderPlans[key] = {}; })
       .finally(() => {
         delete renderPlanPending[key];
-        renderList();   // strip cards carry a Render button too; it must reflect the plan
-        if (String(selectedId) === key) { const shot = findShot(key); if (shot) { refreshEditorState(shot); renderShotSettingsPanel(); } }
+        applyPlanToShotUi(key);   // patch in place; a full re-render would reload every card's video (visible flash)
       });
+  }
+  function applyPlanToShotUi(shotId) {
+    const shot = findShot(shotId);
+    if (!shot) return;
+    const ready = renderReadiness(shot);
+    document.querySelectorAll(`.ds-card[data-id="${shotId}"] [data-card-action="render"]`).forEach((button) => {
+      button.disabled = !ready.ok;
+      button.title = ready.ok ? "Render this shot" : ready.reasons.join(" · ");
+    });
+    if (String(selectedId) === String(shotId)) { refreshEditorState(shot); renderShotSettingsPanel(); }
   }
   function planDrops(shot, kind) {
     const plan = renderPlans[String(shot.id)];
