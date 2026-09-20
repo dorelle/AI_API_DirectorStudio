@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919d"></script>
-  <script defer src="/static/director_shots.js?v=20260922a"></script>
+  <script defer src="/static/director_shots.js?v=20260922b"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -3579,7 +3579,10 @@ function setSettingsTab(tab, manual = false) {
   if (!imageBtn || !videoBtn || !imagePane || !videoPane) return;
   // Task 18: the Shot tab exists while the workspace is in Shot mode (film project, shot selected)
   const shotMode = String(document.getElementById("promptBar")?.dataset.promptMode || "") === "shot";
-  if (shotBtn) shotBtn.style.display = shotMode || wanted === "shot" ? "" : "none";
+  // The Shot tab is there in every workspace while a film project is active (same three tabs everywhere)
+  const shotPill = document.getElementById("promptModeShotBtn");
+  const filmActive = Boolean(shotPill && shotPill.style.display !== "none");
+  if (shotBtn) shotBtn.style.display = filmActive || shotMode || wanted === "shot" ? "" : "none";
   if (shotBtn) { shotBtn.classList.toggle("active", wanted === "shot"); shotBtn.setAttribute("aria-selected", wanted === "shot" ? "true" : "false"); }
   if (shotPane) shotPane.style.display = wanted === "shot" ? "" : "none";
   if (wanted === "shot" && typeof window.renderShotSettingsPanel === "function") window.requestAnimationFrame(() => window.renderShotSettingsPanel());
@@ -9068,6 +9071,7 @@ const GALLERY_DENSITY_CARD_MIN = {
   2: 180,
   3: 150,
 };
+const GALLERY_RAIL_CARD_HARD_FLOOR = 100;   // px; below this a rail card is unreadable
 const HISTORY_SIDEBAR_WIDTH_DEFAULT = 390;
 const HISTORY_SIDEBAR_WIDTH_MIN = 240;
 const HISTORY_SIDEBAR_WIDTH_MAX = 760;
@@ -9376,7 +9380,12 @@ function updateGalleryRailLayout() {
   const gridWidth = Math.max(0, Math.floor(grid.clientWidth || grid.getBoundingClientRect().width || 0));
   let activeColumns = preferred;
   if (gridWidth > 0) {
-    activeColumns = Math.max(1, Math.min(preferred, Math.floor((gridWidth + gap) / (minCardWidth + gap)) || 1));
+    // The preferred column count wins as long as each card keeps at least the hard floor; the per-level
+    // minimum only decides how narrow a rail still gets that count. A 300px rail used to give 1 column
+    // at every level, so the Size slider looked dead.
+    const fitsAtMin = Math.floor((gridWidth + gap) / (minCardWidth + gap)) || 1;
+    const fitsAtFloor = Math.floor((gridWidth + gap) / (GALLERY_RAIL_CARD_HARD_FLOOR + gap)) || 1;
+    activeColumns = Math.max(1, Math.min(preferred, Math.max(fitsAtMin, fitsAtFloor)));
   }
   document.documentElement.style.setProperty("--gallery-rail-active-columns", String(activeColumns));
   return activeColumns;

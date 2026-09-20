@@ -223,6 +223,11 @@
     if (toggle) toggle.style.display = film ? "" : "none";
     if (pill) pill.style.display = film ? "" : "none";
     if (scenePill) scenePill.style.display = film ? "" : "none";
+    // the settings sidebar shows the Shot tab whenever the Shot pill is there
+    if (typeof window.setSettingsTab === "function") {
+      const active = document.querySelector("#settingsTabVideoBtn.active") ? "video" : (document.querySelector("#settingsTabShotBtn.active") ? "shot" : "image");
+      window.setSettingsTab(active, false);
+    }
     syncStrip();
     if (!film) {
       shots = [];

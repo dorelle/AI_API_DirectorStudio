@@ -7536,9 +7536,9 @@ ASSET_GALLERY_PAGE_CONFIG = {
         "empty_subtitle": "Generate with reference images and they will appear here for reuse.",
     },
     "history": {
-        "title": "History",
+        "title": "Images",   # the same source the Generator rail calls Images; the kind key stays 'history'
         "subtitle": "Saved generations with the same filters, selection, and scaling flow as the Generator sidebar.",
-        "empty_title": "No history images yet.",
+        "empty_title": "No generated images yet.",
         "empty_subtitle": "Generate images and they will appear here automatically.",
     },
     "videos": {
