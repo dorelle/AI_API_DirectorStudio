@@ -117,6 +117,62 @@
   let styleForm = null;            // { mode: "new"|"edit", id, name, text, images[], projectOnly } while the inline form is open
   let stylePickingImages = false;  // reference picker is open for the style form, not the shot
   const activeRenders = {};        // shotId -> jobId being polled
+  // Task 21: which of a shot's asset urls are already loved (source url -> loved url). Filled per selected shot.
+  const lovedByUrl = {};
+  let lovedLookupPending = null;
+  const HEART_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+  const HEART_FULL_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+  function isLovedUrl(url) { return Boolean(url) && (String(url).startsWith("/loved/") || Boolean(lovedByUrl[String(url)])); }
+  function loveButtonMarkup(url, cls, extra = "") {
+    if (!url) return "";
+    const loved = isLovedUrl(url);
+    return `<button type="button" class="${cls}${loved ? " is-loved" : ""}" data-love-url="${esc(url)}" ${extra} title="${loved ? "Loved" : "Love this image: it lands in Loved under this film, where the shot picker opens"}">${loved ? HEART_FULL_SVG : HEART_SVG}</button>`;
+  }
+  function shotAssetUrls(shot) {
+    const urls = [];
+    (shot.reference_assets || []).forEach((entry) => { const ref = refOf(entry); if (ref) urls.push(ref); });
+    if (shot.first_frame) urls.push(String(shot.first_frame));
+    if (shot.last_frame) urls.push(String(shot.last_frame));
+    (takesCache[String(shot.id)] || []).forEach((take) => { if (take.poster_path) urls.push(String(take.poster_path)); });
+    return urls.filter((u) => !u.startsWith("/loved/") && !(u in lovedByUrl));
+  }
+  function refreshLovedState(shot) {
+    const urls = shotAssetUrls(shot);
+    if (!urls.length || lovedLookupPending) return;
+    lovedLookupPending = api("/api/loved/lookup", { method: "POST", body: { urls } })
+      .then((payload) => { Object.entries(payload.loved || {}).forEach(([url, loved]) => { lovedByUrl[url] = loved || ""; }); applyLovedMarks(); })
+      .catch(() => {})
+      .finally(() => { lovedLookupPending = null; });
+  }
+  function applyLovedMarks() {
+    document.querySelectorAll("#dsShotEditor [data-love-url]").forEach((button) => {
+      const loved = isLovedUrl(button.dataset.loveUrl);
+      button.classList.toggle("is-loved", loved);
+      button.innerHTML = loved ? HEART_FULL_SVG : HEART_SVG;
+      button.title = loved ? "Loved" : "Love this image: it lands in Loved under this film, where the shot picker opens";
+    });
+  }
+  async function loveAsset(shot, url, button) {
+    if (!url || isLovedUrl(url)) return;
+    if (button) button.disabled = true;
+    try {
+      const payload = await api("/api/loved/from-asset", { method: "POST", body: { asset_url: url, project_id: project ? project.id : null, shot_id: shot ? shot.id : null } });
+      lovedByUrl[url] = payload.url || url;
+      applyLovedMarks();
+      setStatusLine(payload.already ? "Already loved." : `Loved under ${project ? project.name : "the film"}.`, "success");
+    } catch (error) {
+      setStatusLine(error.message || "Could not love the image.", "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+  function bindLoveButtons(shot) {
+    document.querySelectorAll("#dsShotEditor [data-love-url]").forEach((button) => {
+      if (button.dataset.loveBound === "1") return;
+      button.dataset.loveBound = "1";
+      button.addEventListener("click", (event) => { event.stopPropagation(); loveAsset(shot, button.dataset.loveUrl, button); });
+    });
+  }
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -469,6 +525,9 @@
     const strip = $("dsShotStrip");
     if (!strip) return;
     const bar = $("promptBar");
+    // Task 21: shot renders name their own files from the ID; the scope bar's Filename does nothing here
+    const mode = bar ? String(bar.dataset.promptMode || "") : "";
+    document.getElementById("projectMetaBar")?.classList.toggle("is-shot-mode", isFilm() && (mode === "shot" || mode === "scene"));
     if (bar && bar.dataset.promptMode === "scene") renderSceneEditor();
     const show = isFilm() && isShotMode();
     strip.style.display = show ? "" : "none";
@@ -683,6 +742,7 @@
   function bindFrameFields(shot) {
     const host = $("dsShotEditor");
     if (!host) return;
+    bindLoveButtons(shot);
     host.querySelectorAll("[data-frame-pick]").forEach((button) => button.addEventListener("click", () => pickFrame(shot.id, button.dataset.framePick)));
     host.querySelectorAll("[data-frame-clear]").forEach((button) => button.addEventListener("click", () => setShotFrame(shot.id, button.dataset.frameClear, "")));
     host.querySelectorAll(".ds-frame-field").forEach((zone) => {
@@ -811,13 +871,20 @@
     return { ok: reasons.length === 0, rendering: false, reasons };
   }
 
+  function planWarnings(shot) {
+    const plan = renderPlans[String(shot.id)];
+    return (plan && Array.isArray(plan.warnings)) ? plan.warnings : [];
+  }
+
   function readinessMarkup(shot) {
     const ready = renderReadiness(shot);
-    const title = ready.ok ? "Render this shot" : ready.reasons.join(" \u00b7 ");
+    const warns = planWarnings(shot);
+    const warnMarkup = warns.length ? `<span class="ds-ready-warn" title="${esc(warns.map((w) => `${w.what}: ${w.why}`).join(" \u00b7 "))}">\u26a0 ${esc(warns.map((w) => w.what).join(" \u00b7 "))}</span>` : "";
+    const title = (ready.ok ? "Render this shot" : ready.reasons.join(" \u00b7 ")) + (warns.length ? " \u00b7 " + warns.map((w) => `${w.what}: ${w.why}`).join(" \u00b7 ") : "");
     const button = `<button type="button" class="history-filter-toggle ds-render-btn" id="dsRenderBtn" ${ready.ok ? "" : "disabled"} title="${esc(title)}">${ready.rendering ? "Rendering\u2026" : "\u25B6 Render shot"}</button>`;
     const hint = (ready.ok || ready.rendering) ? "" : `<span class="ds-ready-hint${ready.blocked ? " is-blocked" : ""}" id="dsReadyHint">${ready.blocked ? "Blocked \u2014 " : ""}${ready.reasons.map(esc).join(" \u00b7 ")}</span>`;
     const anyway = ready.blocked ? `<button type="button" class="ds-shot-mini ds-render-anyway" id="dsRenderAnyway" title="Send a reduced payload. You will be asked to confirm exactly what is dropped.">Render anyway\u2026</button>` : "";
-    return `<span class="ds-ready">${hint}${button}${anyway}</span>`;
+    return `<span class="ds-ready">${warnMarkup}${hint}${button}${anyway}</span>`;
   }
 
   // After a field save: refresh readiness + section state in place (the editor is not rebuilt, to keep focus).
@@ -906,6 +973,7 @@
         <span class="ds-frame-actions">
           <button type="button" class="ds-card-btn" data-frame-pick="${field.key}">${url ? "Replace" : "Pick"}</button>
           ${url ? `<button type="button" class="ds-card-btn" data-frame-clear="${field.key}">Clear</button>` : ""}
+          ${url ? loveButtonMarkup(String(value), "ds-frame-love") : ""}
         </span>
         ${url ? `<span class="ds-frame-name" title="${esc(value)}">${esc(String(value).split("/").pop())}</span>` : ""}
       </div>`;
@@ -1013,6 +1081,7 @@
     $("dsOpenShotScene")?.addEventListener("click", () => selectScene(shot.scene_id, { openEditor: true }));
     bindTakesSection(shot);
     loadTakes(shot.id);
+    refreshLovedState(shot);
   }
 
   // ---- style: one reusable look, attached per shot, on/off without detaching -----
@@ -1695,6 +1764,28 @@
 
   // ---- Task 18: Shot settings panel (left column, Shot tab). The shot's own video settings, saved to the row. ----
   const DEFAULT_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
+  // Task 21: audio on + dialogue = an invented voice. Said wherever audio is set; never a block.
+  function audioOnCount() { return shots.filter((s) => s.generate_audio).length; }
+  function audioWarningMarkup(shot) {
+    if (!shot.generate_audio) return "";
+    const withDialogue = hasText(shot.dialogue);
+    const others = audioOnCount();
+    return `<div class="ds-audio-warn">${withDialogue
+      ? "<strong>Audio is on and this shot has dialogue.</strong> The model will invent a voice for the lines. This project syncs voice afterwards (ElevenLabs): turn audio off unless you want the model's voice."
+      : "<strong>Audio is on.</strong> This project renders silent and syncs audio afterwards."}
+      ${others > 1 ? `<br><button type="button" class="ds-shot-mini" id="dsAudioOffAll" title="Sets Generate audio off on every shot of this project">Turn audio off on all ${others} shots with it on</button>` : ""}</div>`;
+  }
+  async function turnAudioOffForProject() {
+    if (!project) return;
+    try {
+      const payload = await api(`/api/projects/${project.id}/shots/audio-off`, { method: "POST", body: {} });
+      shots = Array.isArray(payload.shots) ? payload.shots : shots;
+      shots.forEach((s) => invalidateRenderPlan(s.id));
+      renderList(); renderEditor(); renderShotSettingsPanel();
+      setStatusLine(`Audio turned off on ${payload.changed} shot${payload.changed === 1 ? "" : "s"}.`, "success");
+    } catch (error) { setStatusLine(error.message || "Could not update the shots.", "error"); }
+  }
+
   function renderShotSettingsPanel() {
     const host = document.getElementById("settingsPaneShot");
     if (!host) return;
@@ -1741,7 +1832,7 @@
       <div class="ctrl-group"><div class="ctrl-label">Duration</div>${durationControl}</div>
       ${resolutions.length ? `<div class="ctrl-group"><div class="ctrl-label">Resolution</div><select class="ds-field-input" data-shot-setting="resolution"><option value="">Model default (${esc(String(resolutions[0]))})</option>${resolutions.map((r) => `<option value="${esc(String(r))}" ${String(r) === String(shot.resolution || "") ? "selected" : ""}>${esc(String(r))}</option>`).join("")}</select></div>` : ""}
       ${info && info.supports_aspect_ratio === false ? "" : `<div class="ctrl-group"><div class="ctrl-label">Aspect ratio</div><select class="ds-field-input" data-shot-setting="aspect_ratio"><option value="">Project default${project.settings && project.settings.aspect_ratio ? ` (${esc(project.settings.aspect_ratio)})` : ""}</option>${aspects.map((a) => `<option value="${esc(String(a))}" ${String(a) === String(shot.aspect_ratio || "") ? "selected" : ""}>${esc(String(a))}</option>`).join("")}</select></div>`}
-      ${supportsAudio ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="generate_audio" ${shot.generate_audio ? "checked" : ""}> <span>Generate audio</span></label>${info && info.generate_audio_field === "audio" ? `<div class="ref-note">Off by default here: this project renders silent and syncs audio afterwards.</div>` : ""}</div>` : (info ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><div class="ref-note">${esc(info.label || engine)} does not generate audio.</div></div>` : "")}
+      ${supportsAudio ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="generate_audio" ${shot.generate_audio ? "checked" : ""}> <span>Generate audio${shot.generate_audio ? " \u2014 ON" : ""}</span></label>${info && info.generate_audio_field === "audio" ? `<div class="ref-note">Off by default here: this project renders silent and syncs audio afterwards.</div>` : ""}${audioWarningMarkup(shot)}</div>` : (info ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><div class="ref-note">${esc(info.label || engine)} does not generate audio.${shot.generate_audio ? " The shot's audio flag is on but has no effect here." : ""}</div></div>` : "")}
       ${info && info.supports_thinking ? `<div class="ctrl-group"><div class="ctrl-label">Thinking</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="enable_thinking" ${shot.enable_thinking === false ? "" : "checked"}> <span>Enable thinking (reasoning pass before generation)</span></label><div class="ref-note">On by default: multi-subject prompts need it. Adds latency.</div></div>` : ""}
       ${modeControl}
       ${seedControl}
@@ -1750,6 +1841,7 @@
       ${blocker}
       <div class="ctrl-group"><div class="ctrl-label">Reference tray</div><div class="ref-note${drops.length ? " is-blocked" : ""}">${esc(summary.join(" \u00b7 "))}. Attach in the Elements and Assets sections of the shot editor; order there is the reference order.</div></div>
       <div class="ctrl-group"><div class="ref-note">Everything here is per shot and saved on the row. Multi-shot prompt lists stay in the Video workspace.</div></div>`;
+    host.querySelector("#dsAudioOffAll")?.addEventListener("click", turnAudioOffForProject);
     host.querySelectorAll("[data-suggest-engine]").forEach((button) => {
       button.addEventListener("click", async () => {
         try {
@@ -1899,7 +1991,7 @@
       const engineLabel = videoModels && videoModels[take.engine] ? videoModels[take.engine].label : take.engine;
       const importedNote = take.imported ? `<div class="ds-take-imported" title="Added from the gallery${take.imported_from ? ": " + esc(take.imported_from) : ""}. Not rendered from this row: no prompt sent, no references and no engine of record on the shot.">imported \u00b7 not from this shot's prompt, references or engine</div>` : "";
       return `<div class="ds-take${take.approved ? " is-approved" : ""}${failed ? " is-failed" : ""}${take.imported ? " is-imported" : ""}" data-take="${take.id}">
-        <div class="ds-take-thumb">${thumb}${take.approved ? `<span class="ds-card-approved" title="Approved">\u2713</span>` : ""}${take.imported ? `<span class="ds-take-import-tag" title="Imported from the gallery">imported</span>` : ""}</div>
+        <div class="ds-take-thumb">${thumb}${take.approved ? `<span class="ds-card-approved" title="Approved">\u2713</span>` : ""}${take.imported ? `<span class="ds-take-import-tag" title="Imported from the gallery">imported</span>` : ""}${(!failed && !busy && take.poster_path) ? loveButtonMarkup(String(take.poster_path), "ds-take-love", 'data-love-what="the first frame of this take"') : ""}</div>
         ${importedNote}
         <div class="ds-take-meta">
           <span class="ds-take-cost${take.cost_status === "unknown" ? " is-unknown" : ""}" title="${take.cost_status === "unknown" ? "No published rate for this engine in the studio table" : (take.cost_status === "known" ? "From the published per-second rate" : "")}">${take.cost_status === "unknown" ? "cost unknown" : "$" + Number(take.cost || 0).toFixed(2)}</span>
@@ -1917,6 +2009,8 @@
   }
 
   function bindTakesSection(shot) {
+    bindLoveButtons(shot);
+    refreshLovedState(shot);
     document.querySelectorAll("#dsTakes [data-take-action]").forEach((button) => {
       button.addEventListener("click", async (event) => {
         event.stopPropagation();
@@ -2130,6 +2224,7 @@
           <span class="ds-chip-label">${esc(thumb.label)}</span>
           <button type="button" class="ds-chip-role role-${role}" data-role-for="${index}" title="Role: ${esc(ROLE_LABELS[role])} \u2014 click to change">${esc(ROLE_LABELS[role])}</button>
         </span>
+        ${group.list === "reference_assets" ? loveButtonMarkup(refOf(value), "ds-chip-love") : (group.list === "elements" && !thumb.cast && elementCatalog && elementCatalog[String(refOf(value))] ? `<button type="button" class="ds-chip-love ds-chip-pin${elementCatalog[String(refOf(value))].is_favorite ? " is-loved" : ""}" data-pin-element="${esc(refOf(value))}" title="${elementCatalog[String(refOf(value))].is_favorite ? "Pinned: shows first in the Elements picker" : "Pin: show first in the Elements picker"}">\u2605</button>` : "")}
         <button type="button" class="ds-chip-remove" data-remove="${index}" title="Remove">&times;</button>
       </div>`;
     }).join("");
@@ -2195,6 +2290,20 @@
         }
       });
     });
+    bindLoveButtons(shot);
+    document.querySelectorAll("#dsShotEditor [data-pin-element]").forEach((button) => button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const asset = elementCatalog && elementCatalog[button.dataset.pinElement];
+      if (!asset) return;
+      const next = !asset.is_favorite;
+      try {
+        await fetch("/api/elements/toggle-favorite", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: asset.id, folder: asset.folder, favorite: next }) });
+        asset.is_favorite = next;
+        button.classList.toggle("is-loved", next);
+        button.title = next ? "Pinned: shows first in the Elements picker" : "Pin: show first in the Elements picker";
+        setStatusLine(next ? `${asset.name} pinned.` : `${asset.name} unpinned.`, "success");
+      } catch (error) { setStatusLine(error.message || "Could not change the pin.", "error"); }
+    }));
     document.querySelectorAll("#dsShotEditor .ds-attachments").forEach((container) => {
       const listKey = container.dataset.list;
       container.querySelectorAll("[data-remove]").forEach((button) => {

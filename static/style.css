@@ -10244,3 +10244,93 @@ optgroup.opt-needs-key, option.opt-needs-key { color: var(--text-dim); font-styl
 .ds-import-option:hover { background: rgba(var(--accent-rgb), 0.18); }
 .ds-import-option.is-current { outline: 1px solid rgba(var(--accent-rgb), 0.6); }
 .ds-field-label .ds-upload-btn { margin-left: auto; margin-right: 6px; }
+
+/* ---- Director Studio, Task 21 ---- */
+/* Elements page: sidebar | grid | detail */
+.elp-main {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 420px;
+  gap: 0;
+  height: calc(100vh - var(--navbar-h));
+  margin-top: var(--navbar-h);
+  min-height: 0;
+}
+.elp-side { display: flex; flex-direction: column; gap: 10px; padding: 16px 12px; border-right: 1px solid var(--border); background: var(--surface); min-height: 0; }
+.elp-title { font-size: 18px; font-weight: 800; margin: 0; }
+.elp-sub { font-size: 11px; color: var(--text-dim); line-height: 1.4; margin-top: 4px; }
+.elp-search { position: relative; }
+.elp-search input { width: 100%; box-sizing: border-box; }
+.elp-cats { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.elp-side-foot { display: grid; gap: 6px; }
+.elp-side-foot .btn-new-gen { text-align: center; }
+.elp-hint { font-size: 11px; color: var(--text-dim); line-height: 1.35; }
+.elp-grid-wrap { padding: 16px; overflow-y: auto; min-height: 0; }
+.elp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.elp-card-type { display: block; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); margin-top: 2px; }
+.elp-detail { border-left: 1px solid var(--border); background: var(--surface); padding: 16px; overflow-y: auto; min-height: 0; }
+.elp-detail-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-size: 13px; text-align: center; line-height: 1.5; }
+.elp-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.elp-detail-name { font-size: 16px; font-weight: 800; }
+.elp-detail-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.elp-detail-actions { display: flex; gap: 6px; align-items: center; }
+.elp-detail-actions .ds-shot-mini.is-on { color: #ffd700; border-color: rgba(255, 215, 0, 0.5); }
+.elp-images { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.elp-image { position: relative; border: 2px solid transparent; border-radius: 10px; overflow: hidden; background: var(--surface2); aspect-ratio: 3/4; }
+.elp-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.elp-image.is-primary { border-color: var(--accent); }
+.elp-image.is-missing { border-color: rgba(255, 79, 79, 0.5); }
+.elp-image-missing { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 11px; color: var(--red); }
+.elp-image-actions { position: absolute; left: 4px; right: 4px; bottom: 4px; display: flex; justify-content: space-between; gap: 4px; opacity: 0; transition: opacity 0.15s; }
+.elp-image:hover .elp-image-actions, .elp-image.is-primary .elp-image-actions { opacity: 1; }
+.elp-image-tag { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; background: var(--accent); color: var(--accent-text, #0d0d0d); padding: 2px 6px; border-radius: 999px; }
+.elp-image-add { display: flex; align-items: center; justify-content: center; border: 1px dashed var(--border2); cursor: pointer; font-size: 12px; color: var(--text-dim); }
+.elp-image-add:hover { border-color: var(--accent); color: var(--text); }
+.elp-form .ds-field-input { width: 100%; box-sizing: border-box; }
+.elp-save-row { margin-top: 12px; }
+.elp-drop { position: relative; border: 1px dashed var(--border2); border-radius: 12px; min-height: 160px; display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; background: var(--surface2); margin-bottom: 10px; }
+.elp-drop.has-image { min-height: 0; }
+.elp-drop img { max-width: 100%; max-height: 320px; display: block; }
+.elp-drop.is-drop { border-color: var(--accent); }
+.elp-drop-text { text-align: center; font-size: 12px; color: var(--text-dim); }
+@media (max-width: 1100px) {
+  .elp-main { grid-template-columns: 200px minmax(0, 1fr); }
+  .elp-detail { grid-column: 1 / span 2; border-left: 0; border-top: 1px solid var(--border); }
+}
+
+/* Loved picker: film filter */
+.pub-picker-film-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
+.pub-picker-film-toggle input { accent-color: var(--accent); }
+
+/* Heart on shot chips, frames and takes */
+.ds-chip-love, .ds-frame-love, .ds-take-love {
+  border: 1px solid var(--border2);
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.ds-chip-love svg, .ds-frame-love svg, .ds-take-love svg { width: 11px; height: 11px; }
+.ds-chip-love.is-loved, .ds-frame-love.is-loved, .ds-take-love.is-loved { color: #ff5c8a; border-color: rgba(255, 92, 138, 0.6); }
+.ds-chip-love:hover, .ds-frame-love:hover, .ds-take-love:hover { color: #ff5c8a; }
+.ds-chip-love { flex: 0 0 auto; width: 18px; height: 18px; background: transparent; border-color: transparent; color: var(--text-dim); }
+.ds-chip-love.is-loved { color: #ff5c8a; }
+.ds-chip-pin { font-size: 11px; }
+.ds-chip-pin.is-loved { color: #ffd700; }
+.ds-take-love { position: absolute; right: 6px; top: 6px; }
+.ds-frame-love { margin-left: 4px; }
+
+/* Audio-on-with-dialogue warning */
+.ds-audio-warn { margin-top: 6px; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(245, 197, 66, 0.6); background: rgba(245, 197, 66, 0.12); font-size: 11px; line-height: 1.4; color: var(--text); }
+.ds-audio-warn strong { color: #f5c542; }
+.ds-audio-warn .ds-shot-mini { margin-top: 6px; }
+.ds-ready-warn { font-size: 11px; color: #f5c542; margin-right: 8px; }
+
+/* Filename is a Generator field; Shot and Scene modes assemble their own names */
+.project-meta-bar.is-shot-mode .project-meta-field-filename { display: none !important; }
+.project-meta-bar.is-shot-mode.project-meta-missing-filename .project-meta-field-filename { display: none !important; }

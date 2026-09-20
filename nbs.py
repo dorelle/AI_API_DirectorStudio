@@ -4922,7 +4922,13 @@ def plan_shot_render(shot: dict, body: dict | None = None) -> dict:
     counts = _shot_attachment_counts(shot)
     reference_count = counts["elements"] + counts["reference_assets"] + counts["style_images"]
     plan = {"engine": engine, "attached": counts, "reference_count": reference_count, "explicit_mode": str(shot.get("input_mode") or ""),
-            "mode": "", "inferred_mode": "", "dropped": [], "suggestions": [], "ok": False, "modes": []}
+            "mode": "", "inferred_mode": "", "dropped": [], "suggestions": [], "ok": False, "modes": [], "warnings": []}
+    # Task 21: never a block, always said. Audio on with dialogue makes the model invent a voice; voice comes from ElevenLabs.
+    if shot.get("generate_audio") and str(shot.get("dialogue") or "").strip():
+        plan["warnings"].append({"kind": "audio_dialogue", "what": "audio is on and this shot has dialogue",
+                                 "why": "the model will invent a voice for the lines; this project syncs voice afterwards. Turn audio off unless you want that."})
+    elif shot.get("generate_audio"):
+        plan["warnings"].append({"kind": "audio_on", "what": "audio is on", "why": "this project renders silent by default"})
     if not engine or engine not in VIDEO_MODELS_INFO:
         plan["error"] = "This shot has no engine." if not engine else f"Engine '{engine}' is not in the video catalog."
         plan["suggestions"] = suggest_engines_for_shot(counts, engine)
@@ -10471,6 +10477,11 @@ def api_loved_list():
             "model_label": params.get("model_label", ""),
             "imageSize": params.get("imageSize", ""),
             "aspectRatio": params.get("aspectRatio", ""),
+            # Task 21: the film this was loved under (uncategorized when loved before Task 21 carried the scope)
+            "assetClient": params.get("assetClient", ""),
+            "assetProject": params.get("assetProject", ""),
+            "assetProjectId": params.get("assetProjectId") or item.get("params", {}).get("assetProjectId") or "",
+            "assetShot": params.get("assetShot", ""),
         })
     return jsonify(result)
 
@@ -10540,6 +10551,8 @@ def build_common_asset_params(meta: dict | None, *, default_model: str = "", def
         "assetProject": asset_meta["assetProject"],
         "assetShot": asset_meta["assetShot"],
         "assetFilename": asset_meta["assetFilename"],
+        "assetProjectId": meta.get("assetProjectId") or "",   # Task 21: the project record, when the sidecar has it
+        "lovedFrom": str(meta.get("lovedFrom") or ""),          # Task 21: the asset a loved copy was made from
         "assetRelpath": asset_relpath,
     }
 
@@ -11206,6 +11219,22 @@ def api_shots_create():
     return jsonify({"ok": True, "shot": shot})
 
 
+@app.route("/api/projects/<int:project_id>/shots/audio-off", methods=["POST"])
+@login_required
+def api_project_shots_audio_off(project_id):
+    """Task 21: turn generate_audio off on every shot of the project (rows from before Task 20 still carry it on)."""
+    project = get_project(project_id)
+    if not project:
+        return jsonify({"ok": False, "error": "Project not found"}), 404
+    init_studio_db()
+    conn = get_db_connection()
+    cursor = conn.execute("UPDATE shots SET generate_audio = 0 WHERE project_id = ? AND generate_audio = 1", (project["id"],))
+    conn.commit()
+    changed = cursor.rowcount
+    conn.close()
+    return jsonify({"ok": True, "changed": changed, "shots": fetch_shots(project["id"])})
+
+
 @app.route("/api/shots/<int:shot_id>/duplicate", methods=["POST"])
 @login_required
 def api_shots_duplicate(shot_id):
@@ -11515,6 +11544,9 @@ def api_reference_archive_list():
             "model_label": params.get("model_label", ""),
             "imageSize": params.get("imageSize", ""),
             "aspectRatio": params.get("aspectRatio", ""),
+            "assetClient": params.get("assetClient", ""),
+            "assetProject": params.get("assetProject", ""),
+            "assetProjectId": params.get("assetProjectId") or "",
         })
     return jsonify(result)
 
@@ -11812,6 +11844,168 @@ def api_elements_catalog():
         "per_page":   per_page,
         "pages":      (total + per_page - 1) // per_page
     })
+
+
+@app.route("/elements")
+@login_required
+def elements_page():
+    """Task 21: the element library as a top-level page (browse by type, create, edit, delete)."""
+    return render_template("elements.html", user=session["user"], element_types=ELEMENT_TYPES, categories=ELEMENTS_CATEGORIES)
+
+
+def _element_record_paths(folder_name: str, element_id: str) -> tuple[str, str]:
+    folder = str(folder_name or "").strip()
+    if folder not in ELEMENTS_CATEGORIES:
+        raise LookupError("Unknown element folder")
+    element_id = str(element_id or "").strip()
+    if not element_id or "/" in element_id or "\\" in element_id or ".." in element_id:
+        raise LookupError("Element not found")
+    folder_path = os.path.join(ELEMENTS_DIR, folder)
+    jpath = talent_json_path(folder_path, element_id)
+    if not os.path.isfile(jpath):
+        raise LookupError("Element not found")
+    return folder_path, jpath
+
+
+def _element_record_response(folder_name: str, record: dict) -> dict:
+    item = dict(record)
+    item["folder"] = folder_name
+    item["type"] = normalize_element_type(item.get("type") or ELEMENT_FOLDER_TYPES.get(folder_name, "talent"))
+    item["fields"] = list(ELEMENT_TYPES[item["type"]]["fields"])
+    images = []
+    for img in item.get("images") or []:
+        path = str((img or {}).get("path") or (img or {}).get("filename") or "")
+        images.append({**img, "url": f"/elements/{folder_name}/{path}" if path else "", "exists": os.path.isfile(os.path.join(ELEMENTS_DIR, folder_name, path)) if path else False})
+    item["images"] = images
+    primary = next((i for i in images if i.get("is_primary") and i.get("url")), images[0] if images else None)
+    item["img_url"] = (primary or {}).get("url", "")
+    return item
+
+
+@app.route("/api/elements/record/<folder>/<element_id>", methods=["GET"])
+@login_required
+def api_element_record_get(folder, element_id):
+    try:
+        folder_path, jpath = _element_record_paths(folder, element_id)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    record = load_talent_json(jpath)
+    if not record:
+        return jsonify({"ok": False, "error": "Element record unreadable"}), 500
+    return jsonify({"ok": True, "element": _element_record_response(folder, record)})
+
+
+ELEMENT_EDITABLE_TEXT = ("name", "description")
+
+
+@app.route("/api/elements/record/<folder>/<element_id>", methods=["PATCH"])
+@login_required
+def api_element_record_update(folder, element_id):
+    """Edit an element's fields. The id (slug) never changes; the display name may. Body may also carry
+    primary_image (filename) and remove_image (filename; the file is deleted, the last image cannot go)."""
+    try:
+        folder_path, jpath = _element_record_paths(folder, element_id)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    record = load_talent_json(jpath)
+    if not record:
+        return jsonify({"ok": False, "error": "Element record unreadable"}), 500
+    body = request.get_json(silent=True) or {}
+    element_type = normalize_element_type(record.get("type") or ELEMENT_FOLDER_TYPES.get(folder, "talent"))
+    for key in ELEMENT_EDITABLE_TEXT:
+        if key in body:
+            record[key] = str(body.get(key) or "").strip()
+    if "name" in body and not record.get("name"):
+        return jsonify({"ok": False, "error": "An element needs a name"}), 400
+    for key in ELEMENT_TYPES[element_type]["fields"]:
+        if key in body:
+            record[key] = str(body.get(key) or "").strip()
+    if "tags" in body:
+        raw = body.get("tags")
+        tags = raw if isinstance(raw, list) else str(raw or "").split(",")
+        record["tags"] = [str(t).strip() for t in tags if str(t).strip()]
+    if "is_favorite" in body:
+        record["is_favorite"] = bool(body.get("is_favorite"))
+    images = list(record.get("images") or [])
+    if body.get("primary_image"):
+        wanted = os.path.basename(str(body["primary_image"]))
+        if not any(str(i.get("path") or i.get("filename")) == wanted for i in images):
+            return jsonify({"ok": False, "error": "That image is not on this element"}), 400
+        for img in images:
+            img["is_primary"] = str(img.get("path") or img.get("filename")) == wanted
+    if body.get("remove_image"):
+        wanted = os.path.basename(str(body["remove_image"]))
+        keep = [i for i in images if str(i.get("path") or i.get("filename")) != wanted]
+        if len(keep) == len(images):
+            return jsonify({"ok": False, "error": "That image is not on this element"}), 400
+        if not keep:
+            return jsonify({"ok": False, "error": "An element keeps at least one image. Delete the element instead."}), 400
+        try:
+            os.remove(os.path.join(folder_path, wanted))
+        except FileNotFoundError:
+            pass
+        if not any(i.get("is_primary") for i in keep):
+            keep[0]["is_primary"] = True
+        images = keep
+    record["images"] = images
+    record["updated_at"] = datetime.now().isoformat()
+    save_talent_json(jpath, record)
+    return jsonify({"ok": True, "element": _element_record_response(folder, record)})
+
+
+@app.route("/api/elements/record/<folder>/<element_id>", methods=["DELETE"])
+@login_required
+def api_element_record_delete(folder, element_id):
+    """Delete the element: its JSON and every image file it lists. Shots that reference it read as missing."""
+    try:
+        folder_path, jpath = _element_record_paths(folder, element_id)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    record = load_talent_json(jpath) or {}
+    removed = 0
+    for img in record.get("images") or []:
+        path = os.path.basename(str((img or {}).get("path") or (img or {}).get("filename") or ""))
+        if not path:
+            continue
+        try:
+            os.remove(os.path.join(folder_path, path))
+            removed += 1
+        except FileNotFoundError:
+            pass
+    os.remove(jpath)
+    return jsonify({"ok": True, "deleted": element_id, "images_removed": removed})
+
+
+@app.route("/api/elements/record/<folder>/<element_id>/images", methods=["POST"])
+@login_required
+def api_element_record_add_image(folder, element_id):
+    """Add an image to an existing element by id (save-talent keys on the name; a renamed element still gets its file here)."""
+    try:
+        folder_path, jpath = _element_record_paths(folder, element_id)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    record = load_talent_json(jpath)
+    if not record:
+        return jsonify({"ok": False, "error": "Element record unreadable"}), 500
+    body = request.get_json(silent=True) or {}
+    image_b64 = str(body.get("data") or body.get("image_data") or "")
+    if not image_b64:
+        return jsonify({"ok": False, "error": "Image data missing"}), 400
+    try:
+        image_b64, mime_type, _, _, _, _, _ = normalize_image_b64(image_b64, str(body.get("mime_type") or "image/jpeg"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Image pre-processing error: {exc}"}), 400
+    num = get_next_image_number(folder_path, element_id)
+    img_file = f"{element_id}_{num:03d}.jpg"
+    with open(os.path.join(folder_path, img_file), "wb") as fh:
+        fh.write(base64.b64decode(image_b64))
+    now_ts = datetime.now().isoformat()
+    images = list(record.get("images") or [])
+    images.append({"filename": img_file, "path": img_file, "added_at": now_ts, "is_primary": not images, "analyzed": False})
+    record["images"] = images
+    record["updated_at"] = now_ts
+    save_talent_json(jpath, record)
+    return jsonify({"ok": True, "element": _element_record_response(folder, record), "image_url": f"/elements/{folder}/{img_file}"})
 
 
 @app.route("/api/elements/toggle-favorite", methods=["POST"])
@@ -15483,6 +15677,88 @@ def api_delete_generation(asset_relpath):
 # ---------------------------------------------------------------------------
 # API Ã¢â‚¬â€ Publish (save to loved/)
 # ---------------------------------------------------------------------------
+def publish_loved_image(img_b64: str, mime_type: str, meta: dict) -> dict:
+    """Task 21: the body of /api/publish as a callable, so an existing asset can be loved by path too."""
+    now = datetime.now()
+    img_b64, mime_type = convert_image_b64_to_png(img_b64, mime_type)
+    fallback_filename = sanitize_asset_filename_stem(
+        meta.get("assetFilename", "") or meta.get("prompt", "") or meta.get("model_label", "") or now.strftime("%H%M%S"),
+        fallback=now.strftime("%H%M%S"),
+    )
+    asset_meta = normalize_asset_metadata(meta, require_filename=True, fallback_filename=fallback_filename)
+    meta.update(asset_meta)
+    config = load_config()
+    update_asset_metadata_memory(config, asset_meta)
+    save_config(config)
+    abs_dir, relpath, basename = build_asset_storage_paths(LOVED_DIR, asset_meta, "png")
+    img_path = os.path.join(LOVED_DIR, relpath.replace("/", os.sep))
+    meta_path = os.path.join(abs_dir, f"{basename}.json")
+    with open(img_path, "wb") as f:
+        f.write(base64.b64decode(img_b64))
+    meta["mime_type"]    = mime_type
+    meta["published_at"] = now.isoformat()
+    meta["filename"]     = os.path.basename(img_path)
+    meta["assetRelpath"] = relpath
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    return {"ok": True, "date": derive_asset_date_key(relpath, now.isoformat()), "file": os.path.basename(img_path),
+            "url": f"/loved/{relpath}", "gallery": url_for("loved_gallery")}
+
+
+def loved_urls_by_source() -> dict:
+    """source asset url -> loved url, for everything loved from an existing asset (Task 21). Read-only."""
+    lookup = {}
+    for item in collect_loved_records():
+        source = str((item.get("params") or {}).get("lovedFrom") or "")
+        if source:
+            lookup.setdefault(source, item.get("url", ""))
+    return lookup
+
+
+@app.route("/api/loved/from-asset", methods=["POST"])
+@login_required
+def api_loved_from_asset():
+    """Task 21: mark an existing image asset loved from Shot mode. Body: {asset_url, project_id?, shot_id?}.
+    The copy files under the film (client/project/scene/shot) so the picker's film filter finds it."""
+    body = request.get_json(silent=True) or {}
+    asset_url = str(body.get("asset_url") or "").strip()
+    if not asset_url:
+        return jsonify({"ok": False, "error": "asset_url missing"}), 400
+    already = loved_urls_by_source().get(asset_url)
+    if already or asset_url.startswith("/loved/"):
+        return jsonify({"ok": True, "url": already or asset_url, "already": True})
+    try:
+        loaded = load_asset_image_payload(asset_url, os.path.basename(asset_url))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    meta = {"lovedFrom": asset_url, "assetFilename": os.path.splitext(os.path.basename(asset_url))[0]}
+    shot = get_shot(body.get("shot_id")) if body.get("shot_id") else None
+    project = get_project(body.get("project_id") or (shot or {}).get("project_id"))
+    if project:
+        meta.update({"assetClient": project.get("assetClient") or project.get("client") or "", "assetProject": project.get("assetProject") or project.get("name") or "",
+                     "assetProjectId": project["id"]})
+    if shot:
+        meta["assetShot"] = shot["slug"]
+        scene = get_scene(shot.get("scene_id")) if shot.get("scene_id") else None
+        if scene:
+            meta["assetScene"] = scene["slug"]
+    try:
+        result = publish_loved_image(loaded["data"], loaded["mime_type"], meta)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Could not love the image: {exc}"}), 500
+    return jsonify(result)
+
+
+@app.route("/api/loved/lookup", methods=["POST"])
+@login_required
+def api_loved_lookup():
+    """Task 21: which of these asset urls are already loved (by source). Body: {urls: [...]}."""
+    body = request.get_json(silent=True) or {}
+    urls = [str(u) for u in (body.get("urls") or []) if str(u or "").strip()]
+    lookup = loved_urls_by_source()
+    return jsonify({"ok": True, "loved": {u: (u if u.startswith("/loved/") else lookup.get(u, "")) for u in urls}})
+
+
 @app.route("/api/publish", methods=["POST"])
 @login_required
 def api_publish():

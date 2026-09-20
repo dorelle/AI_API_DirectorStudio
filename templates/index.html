@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919d"></script>
-  <script defer src="/static/director_shots.js?v=20260921a"></script>
+  <script defer src="/static/director_shots.js?v=20260922a"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -428,7 +428,7 @@
   window.addEventListener('resize', syncHistorySidebarCompactMode);
 })();
 </script>
-<link rel="stylesheet" href="/static/style.css?v=20260921a">
+<link rel="stylesheet" href="/static/style.css?v=20260922a">
 </head>
 <body>
 
@@ -444,6 +444,7 @@
   <div class="nav-links">
     <a href="/index" class="active">Generator</a>
     <a href="/images">Assets</a>
+    <a href="/elements">Elements</a>
     <a href="/workbench">Workbench</a>
     <a href="/reports">Reports</a>
     <a href="/settings" class="nav-icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
@@ -674,7 +675,7 @@
     <div class="settings-tab-pane" id="settingsPaneVideo" role="tabpanel" style="display:none">
       <div class="video-settings-empty" id="videoSettingsEmpty">
         <div class="video-settings-empty-title">No video model selected</div>
-        <div class="video-settings-empty-sub">Switch the workspace to <strong>Video</strong> and pick a model. Its settings and reference tray appear here, built from the model's schema.</div>
+        <div class="video-settings-empty-sub">Pick a video model in the workspace bar below. Its settings and reference tray appear here, built from the model's schema.</div>
       </div>
 
       <div id="videoSettingsBody" style="display:none">
@@ -1893,6 +1894,7 @@
       <div class="pub-picker-source-tabs">
         <button class="pub-picker-source-btn active" id="pickerSourceLovedBtn" type="button" onclick="switchLovedPickerSource('loved')">Loved</button>
         <button class="pub-picker-source-btn" id="pickerSourceReferencesBtn" type="button" onclick="switchLovedPickerSource('references')">References</button>
+        <label class="pub-picker-film-toggle" id="pickerFilmToggle" style="display:none" title="Only images loved under the active film project"><input type="checkbox" id="pickerFilmOnly" checked onchange="onPickerFilmOnlyChange(this.checked)"> <span id="pickerFilmLabel">This film only</span></label>
         <label class="pub-picker-upload-btn" id="pickerUploadBtn" style="display:none" title="Upload images from disk into the reference library (character sheets, portraits, plates). They stay available to every shot.">
           &#8593; Upload<input type="file" id="pickerUploadInput" accept="image/*" multiple style="display:none" onchange="uploadIntoReferenceLibrary(this.files); this.value='';">
         </label>
@@ -3583,6 +3585,14 @@ function setSettingsTab(tab, manual = false) {
   if (wanted === "shot" && typeof window.renderShotSettingsPanel === "function") window.requestAnimationFrame(() => window.renderShotSettingsPanel());
   if (manual) {
     settingsTabManual = wanted;
+    // Task 21: a sidebar tab click switches the workspace too, so "Video" never shows an empty
+    // panel telling the user to switch to Video. Image = the creation workspace.
+    const currentMode = String(document.getElementById("promptBar")?.dataset.promptMode || "creation");
+    const wantedMode = wanted === "video" ? "video" : (wanted === "shot" ? "shot" : "creation");
+    if (currentMode !== wantedMode && !(wantedMode === "creation" && (currentMode === "edit" || currentMode === "upscale")) && typeof window.setPromptMode === "function") {
+      window.setPromptMode(wantedMode);
+      return;   // setPromptMode re-enters here with manual = false
+    }
   } else {
     settingsTabManual = "";
   }
@@ -7057,6 +7067,24 @@ async function onDrop(e, target = "prompt") {
 // ============================================================
 let pickerSource = "loved";
 let pickerTarget = "refs";
+let pickerFilmOnly = true;     // Task 21: the Loved tab filters to the active film for shot targets
+let pickerLastList = [];
+const isShotPickerTarget = (target = pickerTarget) => target === "shot-frame" || target === "shot-last-frame" || target === "shot-refs";
+
+function pickerFilmRecord() {
+  return typeof window.getSelectedProjectRecord === "function" ? (window.getSelectedProjectRecord() || null) : null;
+}
+function pickerItemMatchesFilm(item, record) {
+  if (!record) return true;
+  if (item.assetProjectId && String(item.assetProjectId) === String(record.id)) return true;
+  const wanted = String(record.assetProject || record.name || "").trim().toLowerCase();
+  return Boolean(wanted) && String(item.assetProject || "").trim().toLowerCase() === wanted;
+}
+function onPickerFilmOnlyChange(checked) {
+  pickerFilmOnly = Boolean(checked);
+  renderLovedPickerList(pickerLastList, pickerLastMax);
+}
+let pickerLastMax = 99;
 
 function getLovedPickerSourceConfig(source = pickerSource) {
   if (source === "references") {
@@ -7135,6 +7163,30 @@ function renderLovedPickerList(list, maxRef) {
   grid.innerHTML = "";
   grid.style.display = "grid";
   pickerItemsByUrl = new Map();
+  pickerLastList = list;
+  pickerLastMax = maxRef;
+  // Task 21: shot work attaches from the film's own loved set; the toggle shows every film when needed
+  const filmToggle = document.getElementById("pickerFilmToggle");
+  const record = pickerFilmRecord();
+  const filmFilterOn = pickerSource === "loved" && isShotPickerTarget() && record && pickerFilmOnly;
+  if (filmToggle) {
+    filmToggle.style.display = (pickerSource === "loved" && isShotPickerTarget() && record) ? "" : "none";
+    const label = document.getElementById("pickerFilmLabel");
+    if (label && record) label.textContent = `${record.name || "This film"} only`;
+  }
+  if (filmFilterOn) {
+    const kept = list.filter((item) => pickerItemMatchesFilm(item, record));
+    const hidden = list.length - kept.length;
+    if (!kept.length) {
+      const note = document.createElement("div");
+      note.className = "pub-picker-empty";
+      note.style.display = "block";
+      note.innerHTML = `No images loved under <strong>${String(record.name || "this film").replace(/</g, "&lt;")}</strong> yet.${hidden ? ` ${hidden} loved image${hidden === 1 ? "" : "s"} belong to other films or were loved before the film scope was recorded.` : ""}<br><button type="button" class="history-filter-toggle" onclick="document.getElementById('pickerFilmOnly').checked = false; onPickerFilmOnlyChange(false)">Show all loved images</button>`;
+      grid.appendChild(note);
+      return;
+    }
+    list = kept;
+  }
 
   const byDate = {};
   list.forEach(item => {
@@ -7293,6 +7345,12 @@ async function openLovedPicker(target = "refs") {
 
   pickerSelected = new Set();
   pickerItemsByUrl = new Map();
+  if (isShotPickerTarget()) {
+    pickerSource = "loved";     // Task 21: shot pickers open on Loved, filtered to the film; References stays one click away
+    pickerFilmOnly = true;
+    const box = document.getElementById("pickerFilmOnly");
+    if (box) box.checked = true;
+  }
   syncLovedPickerTargetUi();
   document.getElementById("pubPickerOverlay").style.display = "flex";
   updatePickerSelCount();
@@ -14282,6 +14340,12 @@ async function publishImage(img, idx, params, btnEl) {
           prompt:      params.prompt,
           model:       params.model,
           model_label: params.model_label || (MODELS_INFO[params.model]||{}).label,
+          // Task 21: the film scope of the generation, so the shot picker can filter Loved by film
+          assetClient: params.assetClient || "",
+          assetProject: params.assetProject || "",
+          assetProjectId: params.assetProjectId || "",
+          assetScene: params.assetScene || "",
+          assetShot: params.assetShot || "",
           imageSize:   params.imageSize,
           aspectRatio: params.aspectRatio,
           temperature: params.temperature,
@@ -14838,6 +14902,20 @@ async function openElements(target = "refs") {
   document.getElementById("elementsOverlay").style.display = "flex";
   updateElementsSelCount();
   updateElementsLimitNote();
+  // Task 21: shot and cast pickers open on Pinned (the approved set); falls back to the category when nothing is pinned
+  if (elementsTarget === "shot-elements" || elementsTarget === "scene-cast") {
+    const fallbackCat = elCurrentCat;
+    elCurrentCat = "favorites";
+    renderElFiltersBar();
+    await loadElements();
+    if (!elAllItems.some(i => i.is_favorite)) {
+      elCurrentCat = fallbackCat === "favorites" ? "all" : fallbackCat;
+      renderElFiltersBar();
+      await loadElements();
+    }
+    document.querySelectorAll(".el-cat-btn").forEach(b => b.classList.toggle("active", b.dataset.cat === elCurrentCat));
+    return;
+  }
   renderElFiltersBar();
   await loadElements();
 }
