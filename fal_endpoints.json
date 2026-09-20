@@ -4,7 +4,7 @@
     "The maintained list of fal video endpoints. This is the only catalog file a human edits.",
     "endpoint    - fal endpoint id exactly as fal publishes it (the OpenAPI schema is fetched from it).",
     "id          - optional app-internal id when it must differ from the endpoint (Wan keeps its v1.4 ids).",
-    "label       - dropdown label. Routes that share a label are grouped by input mode.",
+    "label       - dropdown label. The input mode is appended when the catalog loads ('Kling 3.0 Pro - image'), so the label itself names the model tier only.",
     "family      - dropdown family key. Unknown keys need an entry under families.",
     "sort_order  - position in the dropdown, lower first.",
     "input_modes / video_mode_kind - optional; inferred from the endpoint path when omitted.",
@@ -306,7 +306,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o1/standard/reference-to-video",
-      "label": "Kling O1 Standard Reference",
+      "label": "Kling O1 Standard",
       "family": "kling",
       "sort_order": 160,
       "input_modes": [
@@ -326,7 +326,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o1/reference-to-video",
-      "label": "Kling O1 Pro Reference",
+      "label": "Kling O1 Pro",
       "family": "kling",
       "sort_order": 166,
       "input_modes": [
@@ -356,7 +356,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o3/standard/video-to-video/edit",
-      "label": "Kling O3 Standard V2V",
+      "label": "Kling O3 Standard",
       "family": "kling",
       "sort_order": 171,
       "input_modes": [
@@ -366,7 +366,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o3/standard/reference-to-video",
-      "label": "Kling O3 Reference",
+      "label": "Kling O3 Standard",
       "family": "kling",
       "sort_order": 172,
       "input_modes": [
@@ -396,7 +396,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o3/pro/video-to-video/edit",
-      "label": "Kling O3 Pro V2V",
+      "label": "Kling O3 Pro",
       "family": "kling",
       "sort_order": 176,
       "input_modes": [
@@ -406,7 +406,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o3/pro/reference-to-video",
-      "label": "Kling O3 Pro Reference",
+      "label": "Kling O3 Pro",
       "family": "kling",
       "sort_order": 177,
       "input_modes": [
@@ -436,7 +436,7 @@
     },
     {
       "endpoint": "fal-ai/kling-video/o3/4k/reference-to-video",
-      "label": "Kling O3 4K Reference",
+      "label": "Kling O3 4K",
       "family": "kling",
       "sort_order": 180,
       "input_modes": [
@@ -466,7 +466,7 @@
     },
     {
       "endpoint": "fal-ai/bytedance/seedance/v1/lite/reference-to-video",
-      "label": "Seedance 1.0 Lite Reference",
+      "label": "Seedance 1.0 Lite",
       "family": "seedance",
       "sort_order": 222,
       "input_modes": [
@@ -556,7 +556,7 @@
     },
     {
       "endpoint": "bytedance/seedance-2.0/reference-to-video",
-      "label": "Seedance 2.0 Reference",
+      "label": "Seedance 2.0",
       "family": "seedance",
       "sort_order": 252,
       "input_modes": [
@@ -567,7 +567,7 @@
     {
       "id": "fal:wan2.7:text-to-video",
       "endpoint": "fal-ai/wan/v2.7/text-to-video",
-      "label": "Wan Video 2.7",
+      "label": "Wan 2.7",
       "family": "wan-video",
       "sort_order": 210,
       "input_modes": [
@@ -581,7 +581,7 @@
     {
       "id": "fal:wan2.7:image-to-video",
       "endpoint": "fal-ai/wan/v2.7/image-to-video",
-      "label": "Wan Video 2.7",
+      "label": "Wan 2.7",
       "family": "wan-video",
       "sort_order": 211,
       "input_modes": [
@@ -627,7 +627,7 @@
     {
       "id": "fal:wan2.7:reference-to-video",
       "endpoint": "fal-ai/wan/v2.7/reference-to-video",
-      "label": "Wan 2.7 Reference",
+      "label": "Wan 2.7",
       "family": "wan-video",
       "sort_order": 214,
       "input_modes": [
@@ -689,7 +689,7 @@
     },
     {
       "endpoint": "bytedance/seedance-2.0/fast/reference-to-video",
-      "label": "Seedance 2.0 Fast Reference",
+      "label": "Seedance 2.0 Fast",
       "family": "seedance",
       "sort_order": 255
     },
@@ -707,7 +707,7 @@
     },
     {
       "endpoint": "bytedance/seedance-2.5/reference-to-video",
-      "label": "Seedance 2.5 Reference",
+      "label": "Seedance 2.5",
       "family": "seedance",
       "sort_order": 258
     },
@@ -740,7 +740,7 @@
     },
     {
       "endpoint": "fal-ai/veo3.1/reference-to-video",
-      "label": "Veo 3.1 Reference",
+      "label": "Veo 3.1",
       "family": "veo",
       "sort_order": 273,
       "overrides": {
@@ -776,11 +776,98 @@
     },
     {
       "endpoint": "fal-ai/veo3.1/fast/reference-to-video",
-      "label": "Veo 3.1 Fast Reference",
+      "label": "Veo 3.1 Fast",
       "family": "veo",
       "sort_order": 277,
       "overrides": {
         "generate_audio_default": false
+      }
+    },
+    {
+      "endpoint": "alibaba/wan-3.0/text-to-video",
+      "label": "Wan 3.0",
+      "family": "wan-video",
+      "sort_order": 216,
+      "input_modes": [
+        "text"
+      ],
+      "video_mode_kind": "text_to_video",
+      "overrides": {
+        "generate_audio_default": false,
+        "durations": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      }
+    },
+    {
+      "endpoint": "alibaba/wan-3.0/image-to-video",
+      "label": "Wan 3.0",
+      "family": "wan-video",
+      "sort_order": 217,
+      "input_modes": [
+        "image"
+      ],
+      "video_mode_kind": "image_to_video",
+      "overrides": {
+        "generate_audio_default": false,
+        "durations": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      }
+    },
+    {
+      "endpoint": "alibaba/wan-3.0/reference-to-video",
+      "label": "Wan 3.0",
+      "family": "wan-video",
+      "sort_order": 218,
+      "input_modes": [
+        "reference"
+      ],
+      "video_mode_kind": "reference_to_video",
+      "overrides": {
+        "generate_audio_default": false,
+        "durations": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
       }
     }
   ]

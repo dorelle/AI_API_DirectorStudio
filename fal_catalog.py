@@ -350,9 +350,13 @@ def derive_capabilities(endpoint_id: str, fields: dict[str, dict], components: d
     caps["supports_driving_audio"] = bool(audio_field)
     caps["driving_audio_field"] = audio_field
 
-    ga = fields.get("generate_audio")
+    # Wan 3.0 names the flag `audio`; older routes `generate_audio`. Same capability, one key for the UI.
+    ga = fields.get("generate_audio") or fields.get("audio")
     caps["supports_generate_audio"] = ga is not None
     caps["generate_audio_default"] = bool(ga["default"]) if ga and ga.get("default") is not None else False
+    caps["generate_audio_field"] = "generate_audio" if "generate_audio" in fields else ("audio" if "audio" in fields else "")
+    # Task 20: Wan 3.0 `enable_thinking` (reasoning pass before generation)
+    caps["supports_thinking"] = "enable_thinking" in fields
 
     caps["supports_safety_checker"] = "enable_safety_checker" in fields
     caps["supports_multi_prompt"] = "multi_prompt" in fields

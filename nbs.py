@@ -2397,6 +2397,8 @@ def ensure_shots_columns(conn):
         "input_mode":       "TEXT NOT NULL DEFAULT ''",
         "seed":             "INTEGER",
         "cfg_scale":        "REAL",
+        # Task 20: Wan 3.0 reasoning pass. Project default on; per shot off is a choice
+        "enable_thinking":  "INTEGER NOT NULL DEFAULT 1",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2410,6 +2412,9 @@ def ensure_takes_columns(conn):
         "asset_path_numbered": "TEXT NOT NULL DEFAULT ''",
         # Task 19: 'known' when cost came from a published rate, 'unknown' when no rate exists (cost stays 0 but is not a price)
         "cost_status": "TEXT NOT NULL DEFAULT ''",
+        # Task 20: a gallery render added to the shot by hand. Nothing on the shot produced it: no prompt, references or engine of record
+        "imported": "INTEGER NOT NULL DEFAULT 0",
+        "imported_from": "TEXT NOT NULL DEFAULT ''",
     }
     for name, ddl in desired.items():
         if name not in cols:
@@ -2886,7 +2891,7 @@ SHOT_TEXT_FIELDS = (
 SHOT_LIST_FIELDS = ("elements", "reference_assets")
 # Task 08: what each attached reference is for. Starting vocabulary; the user owns this list.
 REFERENCE_ROLES = ("unassigned", "edit_target", "character", "garment", "environment", "prop", "style")
-SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id", "generate_audio", "input_mode", "seed", "cfg_scale")
+SHOT_EDITABLE_FIELDS = SHOT_TEXT_FIELDS + SHOT_LIST_FIELDS + ("duration_seconds", "movement", "chain_from_previous", "status", "locked_fields", "style_id", "style_enabled", "scene_id", "generate_audio", "input_mode", "seed", "cfg_scale", "enable_thinking")
 SHOT_INPUT_MODES = ("text", "image", "reference", "video")
 SHOT_SORT_STEP = 10
 
@@ -2905,6 +2910,7 @@ def shot_row_to_dict(row) -> dict:
     item["chain_from_previous"] = bool(item.get("chain_from_previous"))
     item["style_enabled"] = bool(item.get("style_enabled", 1)) if item.get("style_enabled") is not None else True
     item["generate_audio"] = bool(item.get("generate_audio"))
+    item["enable_thinking"] = True if item.get("enable_thinking") is None else bool(item.get("enable_thinking"))
     return item
 
 
@@ -3139,6 +3145,8 @@ def _shot_updates_from_body(body: dict) -> dict:
         updates["style_enabled"] = 1 if body.get("style_enabled") else 0
     if "generate_audio" in body:
         updates["generate_audio"] = 1 if body.get("generate_audio") else 0
+    if "enable_thinking" in body:
+        updates["enable_thinking"] = 1 if body.get("enable_thinking") else 0
     # Task 19: input mode ('' = infer), seed (int or empty), CFG scale (0..1 or empty)
     if "input_mode" in body:
         mode = str(body.get("input_mode") or "").strip().lower()
@@ -3293,6 +3301,43 @@ def _place_shot_in_scene(project_id: int, shot_id: int, scene_id: int) -> None:
     order.insert(insert_at, shot_id)
     if order != [row["id"] for row in rows]:
         reorder_shots(project_id, order)
+
+
+# Task 20: what a duplicate carries. Not carried: slug (assigned fresh), takes, status, note, chain flag, beat marker.
+SHOT_DUPLICATE_FIELDS = (
+    "scene", "action_text", "dialogue", "audio_cue",
+    "shot_size", "angle", "movement", "lens", "aperture", "speed_ramp",
+    "elements", "reference_assets", "style_id", "style_enabled",
+    "first_frame", "last_frame", "engine",
+    "prompt", "negative_prompt", "scene_prompt",
+    "duration_seconds", "resolution", "aspect_ratio", "generate_audio", "input_mode", "seed", "cfg_scale", "enable_thinking",
+    "locked_fields",
+)
+
+
+def duplicate_shot(shot_id) -> dict:
+    """A copy of the shot placed directly after it, with its own new ID (next setup number in the scene).
+    The same setup from another angle is the common case: change the camera on the copy."""
+    source = get_shot(shot_id)
+    if not source:
+        raise LookupError("Shot not found")
+    if not source.get("scene_id"):
+        raise ValueError("This shot has no scene, so no ID can be assembled for a copy. Put it in a scene first.")
+    body = {key: source.get(key) for key in SHOT_DUPLICATE_FIELDS if source.get(key) not in (None, "")}
+    body.update({
+        "project_id": source["project_id"],
+        "scene_id": source["scene_id"],
+        "after_id": source["id"],
+        "exposure_class": source.get("exposure_class") or "POP",
+        "name_slug": source.get("name_slug") or "copy",
+        "chain_from_previous": False,
+        "status": "empty",
+        "note": "",
+    })
+    body["style_enabled"] = bool(source.get("style_enabled", True))
+    body["generate_audio"] = bool(source.get("generate_audio"))
+    body["enable_thinking"] = bool(source.get("enable_thinking", True))
+    return create_shot(body)
 
 
 def delete_shot(shot_id) -> bool:
@@ -4225,6 +4270,7 @@ def take_row_to_dict(row) -> dict:
     item = dict(row)
     item["approved"] = bool(item.get("approved"))
     item["cost"] = float(item.get("cost") or 0.0)
+    item["imported"] = bool(item.get("imported"))
     return item
 
 
@@ -4266,7 +4312,7 @@ def create_take(shot_id: int, *, engine: str, prompt_sent: str, job_id: str = ""
 
 
 def update_take(take_id, **fields) -> dict | None:
-    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at", "asset_path_numbered", "cost_status"}
+    allowed = {"asset_path", "approved", "cost", "engine", "status", "error", "job_id", "poster_path", "completed_at", "asset_path_numbered", "cost_status", "imported", "imported_from"}
     updates = {key: value for key, value in fields.items() if key in allowed}
     if "status" in updates and updates["status"] not in TAKE_STATUSES:
         raise ValueError("status must be one of " + ", ".join(TAKE_STATUSES))
@@ -4421,6 +4467,87 @@ def set_take_approval(take_id, approved: bool) -> dict:
     return update_take(take["id"], approved=False, **fields)
 
 
+def import_take_from_asset(shot_id, asset_url: str) -> dict:
+    """Task 20: a one-off render from the Video workspace becomes a take on the shot. The video (+ sidecar,
+    + poster) moves under the shot's own folder and slug so approval renames work like any other take.
+    Marked imported: nothing on the shot row produced it (no prompt sent, references or engine of record)."""
+    shot = get_shot(shot_id)
+    if not shot:
+        raise LookupError("Shot not found")
+    project = get_project(shot["project_id"])
+    if not project or project.get("type") != "film":
+        raise ValueError("Takes belong to shots of film projects")
+    source_url = str(asset_url or "").strip()
+    files = _take_file_set(source_url)   # raises FileNotFoundError when the video is not local
+    if any(files["video"] == t.get("asset_path") for t in fetch_takes(shot["id"])):
+        raise ValueError("That render is already a take on this shot.")
+    meta = {}
+    if files.get("json"):
+        try:
+            with open(files["json"], "r", encoding="utf-8") as fh:
+                meta = json.load(fh) or {}
+        except Exception:
+            meta = {}
+    poster_name = str(meta.get("poster_filename") or "")
+    poster_path = os.path.join(files["dir"], poster_name) if poster_name else ""
+    if poster_path and os.path.isfile(poster_path):
+        files["poster"] = poster_path
+    asset_meta = {"assetClient": project.get("assetClient") or project.get("client") or "",
+                  "assetProject": project.get("assetProject") or project.get("name") or "",
+                  "assetShot": shot["slug"], "assetFilename": "take"}
+    scene = get_scene(shot.get("scene_id")) if shot.get("scene_id") else None
+    if scene:
+        asset_meta["assetScene"] = scene["slug"]
+    asset_meta = normalize_asset_metadata(asset_meta, require_filename=True, fallback_filename="take")
+    abs_dir, relpath, basename = build_asset_storage_paths(VIDEOS_DIR, asset_meta, files["ext"].lstrip("."))
+    plan = [(files["video"], os.path.join(abs_dir, f"{basename}{files['ext']}"))]
+    if files.get("json"):
+        plan.append((files["json"], os.path.join(abs_dir, f"{basename}.json")))
+    if files.get("poster"):
+        plan.append((files["poster"], os.path.join(abs_dir, f"{basename}_poster{os.path.splitext(files['poster'])[1]}")))
+    done = []
+    try:
+        for src, dst in plan:
+            if os.path.abspath(src) != os.path.abspath(dst):
+                os.replace(src, dst)
+            done.append((src, dst))
+    except Exception:
+        for src, dst in reversed(done):
+            try:
+                os.replace(dst, src)
+            except Exception:
+                pass
+        raise
+    new_video_url = f"/videos/{relpath}"
+    new_poster_url = f"/videos/{os.path.relpath(plan[-1][1], VIDEOS_DIR).replace(chr(92), '/')}" if files.get("poster") else ""
+    if files.get("json"):
+        try:   # the sidecar follows the file: new name, new scope, and where it came from
+            meta.update({"filename": os.path.basename(plan[0][1]), "assetRelpath": relpath, "assetShot": asset_meta["assetShot"],
+                         "assetProjectId": project["id"], "shotId": shot["id"], "shotSlug": shot["slug"], "imported_from": source_url})
+            if asset_meta.get("assetScene"):
+                meta["assetScene"] = asset_meta["assetScene"]
+            if new_poster_url:
+                meta["poster_filename"] = os.path.basename(plan[-1][1])
+                meta["poster_url"] = new_poster_url
+            with open(plan[1][1], "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+    engine = str(meta.get("model") or "")
+    cost = 0.0
+    try:
+        cost = float(meta.get("cost") or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    take = create_take(shot["id"], engine=engine, prompt_sent="", job_id="")
+    take = update_take(take["id"], status="done", asset_path=new_video_url, poster_path=new_poster_url, asset_path_numbered=new_video_url,
+                       cost=cost, cost_status="known" if cost > 0 else "unknown", imported=1, imported_from=source_url,
+                       completed_at=str(meta.get("generated_at") or utc_now_iso()))
+    if shot.get("status") in ("empty", "failed"):
+        set_shot_status(shot["id"], "done")
+    return take
+
+
 def delete_take(take_id) -> bool:
     existing = get_take(take_id)
     if not existing:
@@ -4498,9 +4625,13 @@ def resolve_element_primary_image_url(element_id: str) -> str:
 # ===== COMPILER RULES - the only default instructions; edit here =====
 COMPILER_RULES = (
     "Compiler rules:\n"
+    "- FIRST RULE. The video model receives the references as a numbered list, in the order given under REFERENCES. "
+    "It knows them only by number. Name every reference by its position, as 'Image 1', 'Image 2' ... "
+    "(for example: 'the woman in Image 1 walks to the table; keep her face and hair exactly as in Image 1; the room is the one in Image 2'). "
+    "A reference mentioned by name, role or description without its number is unusable. Every reference must be named at least once. "
+    "When no references are listed, use no numbers.\n"
     "- Say what is different about this shot. Do not re-describe what the playbook, the scene or the references already establish.\n"
-    "- Name what must stay unchanged from the references, explicitly.\n"
-    "- Address references by position (reference 1, reference 2, ...), matching how they are sent.\n"
+    "- Name what must stay unchanged from the references, explicitly, by number.\n"
     "- Replace vague style words with visible, checkable instructions.\n"
     "- Subject first, then setting, then framing.\n"
     "- For a motion prompt: one clear action, what moves, what the camera does, what must not change. Not the whole scene.\n"
@@ -4620,6 +4751,8 @@ def build_shot_compile_context(shot: dict, project: dict) -> tuple[str, list[dic
     for key, label in (("action_text", "action"), ("dialogue", "dialogue"), ("audio_cue", "audio"), ("beat_marker", "beat")):
         if shot.get(key):
             lines.append(f"{label}: {shot[key]}")
+        elif key == "dialogue":
+            lines.append("dialogue: (none on this shot)")   # Task 20: say so, rather than leave the compiler to guess
     if shot.get("duration_seconds") not in (None, ""):
         lines.append(f"duration: {shot['duration_seconds']:g}s")
     lines.append("## CAMERA")
@@ -4630,12 +4763,12 @@ def build_shot_compile_context(shot: dict, project: dict) -> tuple[str, list[dic
     if shot.get("first_frame"):
         lines.append(f"first frame set: yes ({os.path.basename(str(shot['first_frame']))})")
 
-    lines.append("\n## REFERENCES (numbered exactly as they are sent to the model)")
+    lines.append("\n## REFERENCES (numbered exactly as they are sent to the model; call each one 'Image N' in the prompt)")
     if slots:
         for slot in slots:
-            lines.append(f"reference {slot['position']}: [{slot['kind']}, role {slot['role']}] {slot['label']}")
+            lines.append(f"Image {slot['position']}: [{slot['kind']}, role {slot['role']}] {slot['label']}")
     else:
-        lines.append("(no references attached)")
+        lines.append("(no references attached - do not number anything)")
     style = shot.get("style") if (shot.get("style_id") and shot.get("style_enabled", True)) else None
     lines.append("\n## STYLE")
     lines.append(f"{style.get('name')}: {style.get('text') or '(no text)'} - {len(style.get('images') or [])} image(s), appended after the other references" if style else "(no style applied)")
@@ -4703,7 +4836,7 @@ def _shot_attachment_counts(shot: dict) -> dict:
     }
 
 
-def resolve_shot_input_mode(model_info: dict, reference_count: int, wants_start: bool, explicit_mode: str = "") -> tuple[str, str, list[dict]]:
+def resolve_shot_input_mode(model_info: dict, reference_count: int, wants_start: bool, explicit_mode: str = "", wants_end: bool = False) -> tuple[str, str, list[dict]]:
     """(mode, inferred_mode, dropped). One input mode per run. The inference is Task 07's: references win
     where the model has a reference mode, else a start frame in image mode, else text. An explicit mode is
     honoured when the model offers it; whatever that mode cannot carry is listed in `dropped`, never silently lost."""
@@ -4737,6 +4870,14 @@ def resolve_shot_input_mode(model_info: dict, reference_count: int, wants_start:
             dropped.append({"what": "the start frame", "why": f"{label} has no image mode" if "image" not in modes else "mode 'text' carries no start frame", "kind": "start_frame"})
         elif mode == "reference" and not model_info.get("supports_start_image"):
             dropped.append({"what": "the start frame", "why": f"{label} does not take a start image together with references", "kind": "start_frame"})
+    # Task 20: a last frame rides with the first frame (fal: end_image_url requires the start image)
+    if wants_end:
+        if not wants_start:
+            dropped.append({"what": "the last frame", "why": "a last frame needs a first frame; set one or clear the last frame", "kind": "end_frame"})
+        elif mode == "text":
+            dropped.append({"what": "the last frame", "why": "mode 'text' carries no frames", "kind": "end_frame"})
+        elif not model_info.get("supports_end_image"):
+            dropped.append({"what": "the last frame", "why": f"{label} takes no last frame", "kind": "end_frame"})
     return mode, inferred, dropped
 
 
@@ -4745,6 +4886,7 @@ def suggest_engines_for_shot(counts: dict, current_engine: str = "", limit: int 
     start frame is set, a start image in that mode. Named, never selected automatically."""
     refs = int(counts.get("elements", 0)) + int(counts.get("reference_assets", 0)) + int(counts.get("style_images", 0))
     wants_start = bool(counts.get("first_frame"))
+    wants_end = bool(counts.get("last_frame")) and wants_start
     keys = provider_key_state()
     current = VIDEO_MODELS_INFO.get(current_engine) or {}
     found = []
@@ -4759,6 +4901,8 @@ def suggest_engines_for_shot(counts: dict, current_engine: str = "", limit: int 
             if wants_start and not info.get("supports_start_image"):
                 continue
         elif wants_start and "image" not in modes and not ("reference" in modes and info.get("supports_start_image")):
+            continue
+        if wants_end and not info.get("supports_end_image"):
             continue
         provider = str(info.get("provider") or "")
         ready = bool((keys.get(provider) or {}).get("set", True))
@@ -4786,17 +4930,65 @@ def plan_shot_render(shot: dict, body: dict | None = None) -> dict:
     info = VIDEO_MODELS_INFO[engine]
     plan["modes"] = [str(m).strip().lower() for m in (info.get("input_modes") or [])]
     plan["engine_label"] = info.get("label") or engine
-    mode, inferred, dropped = resolve_shot_input_mode(info, reference_count, counts["first_frame"], plan["explicit_mode"])
+    mode, inferred, dropped = resolve_shot_input_mode(info, reference_count, counts["first_frame"], plan["explicit_mode"], counts["last_frame"])
     plan.update({"mode": mode, "inferred_mode": inferred, "dropped": dropped, "ok": not dropped})
     plan["sends"] = {
         "prompt": "motion prompt" + (" + style text" if (shot.get("style") and shot.get("style_enabled", True) and str((shot.get("style") or {}).get("text") or "").strip()) else ""),
         "references": reference_count if mode == "reference" else 0,
         "start_frame": bool(counts["first_frame"]) and mode != "text" and (mode == "image" or bool(info.get("supports_start_image"))),
-        "end_frame": bool(counts["last_frame"]) and mode != "text" and bool(info.get("supports_end_image")),
+        "end_frame": bool(counts["last_frame"]) and bool(counts["first_frame"]) and mode != "text" and bool(info.get("supports_end_image")),
     }
     if dropped:
         plan["suggestions"] = suggest_engines_for_shot(counts, engine)
     return plan
+
+
+TRANSMIT_RESIZE_MAX_EDGE = 1500     # Task 20: JPEG quality 90, 1500px long edge - the fix recorded for Kling O3 Pro's 10 MB cap
+TRANSMIT_RESIZE_QUALITY = 90
+
+
+def fit_image_payload_to_field_limit(image: dict, max_bytes, what: str, engine_label: str) -> tuple[dict, str]:
+    """When a model field declares a byte cap and the image is over it, return a JPEG copy for transmission
+    (quality 90, at most 1500px on the long edge, stepping quality down if still too big). The original stays on
+    disk; the copy carries no url so the uploader sends the re-encoded bytes. Returns (payload, note or '')."""
+    try:
+        cap = int(max_bytes or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if not isinstance(image, dict) or cap <= 0:
+        return image, ""
+    data_b64 = str(image.get("data") or "")
+    local_path = resolve_asset_url_to_local_path(image.get("original_url") or image.get("url") or "") if not data_b64 else ""
+    if data_b64:
+        size = len(data_b64) * 3 // 4
+    elif local_path and os.path.isfile(local_path):
+        size = os.path.getsize(local_path)
+    else:
+        return image, ""
+    if size <= cap:
+        return image, ""
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(data_b64))) if data_b64 else Image.open(local_path)
+        img.load()
+        img = ImageOps.exif_transpose(img)
+        img = flatten_image_for_jpeg(img)
+        if max(img.size) > TRANSMIT_RESIZE_MAX_EDGE:
+            scale = TRANSMIT_RESIZE_MAX_EDGE / float(max(img.size))
+            img = img.resize((max(1, round(img.size[0] * scale)), max(1, round(img.size[1] * scale))), Image.LANCZOS)
+        quality = TRANSMIT_RESIZE_QUALITY
+        while True:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            raw = buf.getvalue()
+            if len(raw) <= cap or quality <= 60:
+                break
+            quality -= 5
+    except Exception as exc:
+        return image, f"{what}: {size / 1048576:.1f} MB is over {engine_label}'s {cap / 1048576:.0f} MB limit and could not be re-encoded ({exc})."
+    fitted = {"mime_type": "image/jpeg", "data": base64.b64encode(raw).decode("ascii"),
+              "name": os.path.splitext(str(image.get("name") or "image"))[0] + ".jpg",
+              "resized_from": str(image.get("original_url") or image.get("url") or ""), "resized_bytes": len(raw), "original_bytes": size}
+    return fitted, f"Resized {what} for transmission: {size / 1048576:.1f} MB -> {len(raw) / 1048576:.1f} MB (JPEG q{quality}, max {TRANSMIT_RESIZE_MAX_EDGE}px) to fit {engine_label}'s {cap / 1048576:.0f} MB limit. The original is unchanged on disk."
 
 
 def build_shot_render_payload(shot: dict, project: dict, body: dict | None = None) -> tuple[dict, list[str]]:
@@ -4866,7 +5058,7 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     # Task 19: the shot may name its mode; anything the mode cannot carry blocks the render
     # instead of being dropped with a warning. body.allowPartial (an explicit confirmation) proceeds.
     wants_start = bool(chain_image) or bool(first_frame)
-    input_mode, inferred_mode, dropped = resolve_shot_input_mode(model_info, len(reference_urls), wants_start, shot.get("input_mode"))
+    input_mode, inferred_mode, dropped = resolve_shot_input_mode(model_info, len(reference_urls), wants_start, shot.get("input_mode"), bool(last_frame))
     if dropped and not body.get("allowPartial"):
         raise ShotRenderBlocked(plan_shot_render(shot, body))
     for item in dropped:
@@ -4923,6 +5115,9 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
         payload["videoGenerateAudio"] = bool(shot.get("generate_audio"))
     elif shot.get("generate_audio"):
         warnings.append(f"{model_info.get('label', model_id)} does not generate audio; the audio setting was ignored.")
+    # Task 20: Wan 3.0 reasoning pass, per shot (default on). Sent only when the schema has the field.
+    if model_info.get("supports_thinking"):
+        payload["videoEnableThinking"] = bool(shot.get("enable_thinking", True))
     if not payload["prompt"]:
         raise ValueError("The shot has no prompt. Write one in the Prompt section first.")
     if style and str(style.get("text") or "").strip():
@@ -4943,19 +5138,32 @@ def build_shot_render_payload(shot: dict, project: dict, body: dict | None = Non
     elif durations:
         payload["duration"] = durations[0]
 
+    # Task 20: an image over the field's declared byte limit is re-encoded for transmission; the file on disk is untouched
+    limits = model_info.get("image_constraints") or {}
+    def fit(image: dict, field: str, what: str) -> dict:
+        fitted, note = fit_image_payload_to_field_limit(image, (limits.get(field) or {}).get("max_file_size"), what, model_info.get("label", model_id))
+        if note:
+            warnings.append(note)
+        return fitted
     supports_start = bool(model_info.get("supports_start_image")) and input_mode != "text"
     if supports_start:
         if chain_image:
-            payload["sourceImage"] = {"mime_type": str(chain_image.get("mime_type") or "image/png"), "data": str(chain_image.get("data") or ""), "name": "chain-start.png"}
+            payload["sourceImage"] = fit({"mime_type": str(chain_image.get("mime_type") or "image/png"), "data": str(chain_image.get("data") or ""), "name": "chain-start.png"}, str(model_info.get("start_image_field") or ""), "the start frame")
         elif first_frame:
-            payload["sourceImage"] = load_asset_image_payload(first_frame, "video-source.png")
-    if bool(model_info.get("supports_end_image")) and input_mode != "text" and last_frame:
-        payload["endImage"] = load_asset_image_payload(last_frame, "video-end-frame.png")
+            payload["sourceImage"] = fit(load_asset_image_payload(first_frame, "video-source.png"), str(model_info.get("start_image_field") or ""), "the start frame")
+    end_field = str(model_info.get("end_image_field") or "")
+    if bool(model_info.get("supports_end_image")) and input_mode != "text" and last_frame and wants_start:
+        end_image = fit(load_asset_image_payload(last_frame, "video-end-frame.png"), end_field, "the last frame")
+        if input_mode == "reference" and end_field and end_field == str(model_info.get("reference_images_field") or ""):
+            reference_urls = [(last_frame, "end-frame")]   # Wan 2.7 First+Last: the end slot is exposed through the reference tray
+        else:
+            payload["endImage"] = end_image
     if input_mode == "reference":
         max_refs = int(model_info.get("max_reference_images", 0) or 0)
         if max_refs and len(reference_urls) > max_refs:
             reference_urls = reference_urls[:max_refs]   # already listed in `dropped`
-        payload["referenceImages"] = [load_asset_image_payload(url, f"{name}.png") for url, name in reference_urls]
+        ref_field = str(model_info.get("reference_images_field") or "")
+        payload["referenceImages"] = [fit(load_asset_image_payload(url, f"{name}.png"), ref_field, f"reference {index + 1} ({name})") for index, (url, name) in enumerate(reference_urls)]
     # Task 19: seed and CFG per shot, when the model takes them (negative prompt is already above)
     if model_info.get("supports_seed") and shot.get("seed") is not None:
         payload["videoSeed"] = int(shot["seed"])
@@ -5000,6 +5208,9 @@ def _run_shot_render_job(job_id: str, take_id: int, shot_id: int, payload: dict)
         if video_price_is_known(model_used):
             if payload.get("videoGenerateAudio") and model_used in VIDEO_AUDIO_PRICE_FACTORS:
                 cost = round(cost * VIDEO_AUDIO_PRICE_FACTORS[model_used], 4)
+            tier_factor = (VIDEO_RESOLUTION_PRICE_FACTORS.get(model_used) or {}).get(str((result.get("params") or {}).get("resolution") or payload.get("resolution") or ""))
+            if tier_factor is not None:
+                cost = round(cost * float(tier_factor), 4)   # Task 20: the table is the 720p tier
             cost_status = "known"
         elif cost > 0:
             cost_status = "known"      # the runner reported a figure of its own
@@ -7525,7 +7736,7 @@ KLING_DIRECT_MODEL_SPECS = [
     {
         "id": "kling-v1-6-reference-std",
         "native_model_name": "kling-v1-6",
-        "label": "Kling 1.6 Reference Standard",
+        "label": "Kling 1.6 Standard",
         "input_modes": ["reference"],
         "durations": [5, 10],
         "sort_order": 32,
@@ -7540,7 +7751,7 @@ KLING_DIRECT_MODEL_SPECS = [
     {
         "id": "kling-v1-6-reference-pro",
         "native_model_name": "kling-v1-6",
-        "label": "Kling 1.6 Reference Pro",
+        "label": "Kling 1.6 Pro",
         "input_modes": ["reference"],
         "durations": [5, 10],
         "sort_order": 33,
@@ -8676,7 +8887,32 @@ def _build_video_models_info() -> dict:
         for model_id, entry in (generated.get("models") or {}).items():
             if isinstance(entry, dict) and entry.get("provider") == "fal":
                 info[str(model_id)] = dict(entry)
+    for model_id, entry in info.items():
+        entry["label_base"] = str(entry.get("label") or model_id)
+        entry["label"] = label_with_input_modes(entry["label_base"], entry.get("input_modes"))
+    # The same tier and mode from two providers (native Kling vs fal): the provider settles it.
+    seen: dict[str, list] = {}
+    for model_id, entry in info.items():
+        seen.setdefault(entry["label"], []).append(model_id)
+    for label, ids in seen.items():
+        if len(ids) > 1:
+            for model_id in ids:
+                info[model_id]["label"] = f"{label} ({info[model_id].get('provider_label') or info[model_id].get('provider') or model_id})"
     return info
+
+
+VIDEO_LABEL_MODE_SEPARATOR = " \u2014 "
+
+
+def label_with_input_modes(label: str, input_modes) -> str:
+    """Task 20: 'Kling 3.0 Pro' + ['image'] -> 'Kling 3.0 Pro - image'. Fal publishes text-, image- and
+    reference-to-video as separate routes with one shared name; the picker must say which one it is.
+    A label that already carries the separator is left alone."""
+    base = str(label or "").strip()
+    if VIDEO_LABEL_MODE_SEPARATOR in base:
+        return base
+    modes = [str(mode).strip().lower() for mode in (input_modes or []) if str(mode).strip()]
+    return base + VIDEO_LABEL_MODE_SEPARATOR + ("/".join(modes) if modes else "text")
 
 
 VIDEO_MODELS_INFO = _build_video_models_info()
@@ -8700,7 +8936,7 @@ VIDEO_MODEL_FAMILIES_BASE = {
         },
     },
     "wan-video": {
-        "label": "Wan 2.7",
+        "label": "Wan",
         "default_provider": "fal",
         "provider_order": ["fal"],
         "providers": {
@@ -8832,6 +9068,8 @@ _TASK19_PER_SECOND = {
     "bytedance/seedance-2.5/text-to-video": 0.473, "bytedance/seedance-2.5/image-to-video": 0.473, "bytedance/seedance-2.5/reference-to-video": 0.473,
     "fal-ai/veo3.1": 0.20, "fal-ai/veo3.1/image-to-video": 0.20, "fal-ai/veo3.1/first-last-frame-to-video": 0.20, "fal-ai/veo3.1/reference-to-video": 0.20,
     "fal-ai/veo3.1/fast": 0.10, "fal-ai/veo3.1/fast/image-to-video": 0.10, "fal-ai/veo3.1/fast/first-last-frame-to-video": 0.10, "fal-ai/veo3.1/fast/reference-to-video": 0.10,
+    # Task 20: Wan 3.0 at the 720p tier (fal: $0.05 480p, $0.10 720p, $0.20 1080p per second); see the resolution factors below
+    "alibaba/wan-3.0/text-to-video": 0.10, "alibaba/wan-3.0/image-to-video": 0.10, "alibaba/wan-3.0/reference-to-video": 0.10,
 }
 for _model_id, _rate in _TASK19_PER_SECOND.items():
     VIDEO_PRICING.setdefault(_model_id, {str(duration): round(duration * _rate, 4) for duration in VIDEO_DURATION_ALL_OPTIONS})
@@ -8843,6 +9081,12 @@ VIDEO_AUDIO_PRICE_FACTORS = {
     "fal-ai/kling-video/o3/standard/text-to-video": 4 / 3, "fal-ai/kling-video/o3/standard/image-to-video": 4 / 3, "fal-ai/kling-video/o3/standard/reference-to-video": 4 / 3,
     "fal-ai/veo3.1": 2.0, "fal-ai/veo3.1/image-to-video": 2.0, "fal-ai/veo3.1/first-last-frame-to-video": 2.0, "fal-ai/veo3.1/reference-to-video": 2.0,
     "fal-ai/veo3.1/fast": 1.5, "fal-ai/veo3.1/fast/image-to-video": 1.5, "fal-ai/veo3.1/fast/first-last-frame-to-video": 1.5, "fal-ai/veo3.1/fast/reference-to-video": 1.5,
+}
+# Task 20: multiply the table figure by this when the take was rendered at a tier other than the table's (720p).
+VIDEO_RESOLUTION_PRICE_FACTORS = {
+    "alibaba/wan-3.0/text-to-video": {"480p": 0.5, "720p": 1.0, "1080p": 2.0},
+    "alibaba/wan-3.0/image-to-video": {"480p": 0.5, "720p": 1.0, "1080p": 2.0},
+    "alibaba/wan-3.0/reference-to-video": {"480p": 0.5, "720p": 1.0, "1080p": 2.0},
 }
 VIDEO_PRICING = _build_video_pricing()
 
@@ -10960,6 +11204,39 @@ def api_shots_create():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     return jsonify({"ok": True, "shot": shot})
+
+
+@app.route("/api/shots/<int:shot_id>/duplicate", methods=["POST"])
+@login_required
+def api_shots_duplicate(shot_id):
+    """Task 20: a copy directly after the original, new ID, no takes."""
+    try:
+        shot = duplicate_shot(shot_id)
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "shot": shot})
+
+
+@app.route("/api/shots/<int:shot_id>/takes/import", methods=["POST"])
+@login_required
+def api_shot_take_import(shot_id):
+    """Task 20: a gallery render becomes an imported take on this shot. Body: {asset_url}."""
+    body = request.get_json(silent=True) or {}
+    try:
+        take = import_take_from_asset(shot_id, str(body.get("asset_url") or ""))
+    except LookupError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except FileNotFoundError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"Could not move the render under the shot: {exc}"}), 409
+    return jsonify({"ok": True, "take": take, "shot": get_shot(shot_id)})
 
 
 @app.route("/api/shots/reorder", methods=["POST"])
@@ -13602,10 +13879,14 @@ def run_fal_schema_video_job(body: dict, api_key: str) -> dict:
         payload["resolution"] = resolution
     if has("generate_audio") and model_info.get("supports_generate_audio"):
         payload["generate_audio"] = generate_audio
+    elif has("audio") and model_info.get("supports_generate_audio"):
+        payload["audio"] = generate_audio   # Task 20: Wan 3.0 spells the flag `audio` and defaults it to true upstream
     if has("enable_safety_checker") and model_info.get("supports_safety_checker"):
         payload["enable_safety_checker"] = safety_checker
     if has("enable_prompt_expansion"):
         payload["enable_prompt_expansion"] = bool(body.get("videoPromptExpansion", True))
+    if has("enable_thinking"):
+        payload["enable_thinking"] = bool(body.get("videoEnableThinking", True))   # Task 20: project default on
     if has("cfg_scale") and body.get("videoCfgScale") is not None:
         payload["cfg_scale"] = float(body["videoCfgScale"])
     if has("seed") and body.get("videoSeed") is not None:
@@ -13715,7 +13996,8 @@ def run_fal_schema_video_job(body: dict, api_key: str) -> dict:
         "videoMultiPrompt": body.get("videoMultiPrompt") or "",
         "resolution": resolution if "resolution" in payload else None,
         "videoSafetyChecker": safety_checker if "enable_safety_checker" in payload else None,
-        "videoGenerateAudio": generate_audio if "generate_audio" in payload else None,
+        "videoGenerateAudio": generate_audio if ("generate_audio" in payload or "audio" in payload) else None,
+        "videoEnableThinking": payload.get("enable_thinking"),
         "videoCfgScale": payload.get("cfg_scale"),
         "videoSeed": payload.get("seed"),
         "videoHasEndImage": bool(end_field and end_field in payload),

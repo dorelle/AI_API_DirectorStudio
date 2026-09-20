@@ -26,9 +26,8 @@
     { key: "timing", label: "Timing", hint: "Where it lands in the beat map. Duration lives in the Shot settings panel (left).", fields: [
       { key: "beat_marker", label: "Beat marker" },
     ] },
-    { key: "content", label: "Content", step: 1, hint: "What happens in the shot \u2014 action, dialogue, sound.", fields: [
+    { key: "content", label: "Content", step: 1, hint: "What happens in the shot \u2014 action and sound. Dialogue sits with the prompt.", fields: [
       { key: "action_text", label: "Action", type: "textarea" },
-      { key: "dialogue", label: "Dialogue / VO", type: "textarea" },
       { key: "audio_cue", label: "Audio cue" },
     ] },
     { key: "camera", label: "Camera", step: 2, hint: "How it is shot \u2014 size, angle, movement, lens.", fields: [
@@ -44,13 +43,15 @@
     { key: "assets", label: "Assets", step: 4, list: "reference_assets", addLabel: "+ Add references", empty: "No references yet. Add plates, garments, props or style images." },
     { key: "style", label: "Style", style: true },
     { key: "prompt", label: "Prompt", step: 5, hint: "The text the model receives.", fields: [
+      // Task 20: dialogue is the field that most changes the output, so it sits next to the prompts the compiler writes from it
+      { key: "dialogue", label: "Dialogue / VO \u2014 what is said in the shot (the compiler reads it)", type: "textarea", wide: true },
       { key: "scene_prompt", label: "Scene prompt \u2014 the frame (carry it to the Generator for a first frame)", type: "textarea", rows: 4, wide: true, compile: true },
       { key: "prompt", label: "Motion prompt \u2014 sent to the render", type: "textarea", rows: 4, wide: true, compile: true },
       { key: "negative_prompt", label: "Negative prompt", type: "textarea", wide: true },
     ] },
-    { key: "generation", label: "Generation", step: 6, hint: "First frame, engine, and whether it continues from the previous shot.", fields: [
-      { key: "first_frame", label: "First frame" },
-      { key: "last_frame", label: "Last frame" },
+    { key: "generation", label: "Generation", step: 6, hint: "First frame, last frame, engine, and whether it continues from the previous shot.", fields: [
+      { key: "first_frame", label: "First frame", type: "frame", pickTarget: "shot-frame" },
+      { key: "last_frame", label: "Last frame", type: "frame", pickTarget: "shot-last-frame" },
       { key: "chain_from_previous", label: "Chain from previous shot's last frame", type: "checkbox" },
       { key: "engine", label: "Engine (video model)", type: "engine" },
     ] },
@@ -256,6 +257,7 @@
         <span class="ds-shot-scene">${esc(sceneLabelOf(shot))}</span>
         <span class="ds-shot-row-actions">
           <button type="button" class="ds-shot-mini" data-action="insert" title="Insert a shot after this one">+</button>
+          <button type="button" class="ds-shot-mini" data-action="duplicate" title="Duplicate this shot (new ID, no takes)">\u2398</button>
           <button type="button" class="ds-shot-mini ds-shot-mini-danger" data-action="delete" title="Delete this shot">&times;</button>
         </span>
       </div>`;
@@ -309,6 +311,10 @@
       row.querySelector('[data-action="insert"]').addEventListener("click", (event) => {
         event.stopPropagation();
         createShot({ after_id: Number(id) });
+      });
+      row.querySelector('[data-action="duplicate"]')?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        duplicateShot(id);
       });
       const del = row.querySelector('[data-action="delete"]');
       del.addEventListener("click", (event) => {
@@ -405,6 +411,20 @@
       setStatusLine(`${payload.shot.slug} added.`, "success");
     } catch (error) {
       setStatusLine(error.message || "Could not add the shot.", "error");
+    }
+  }
+
+  // Task 20: the same setup from another angle is a duplicate with the camera changed.
+  async function duplicateShot(id) {
+    const source = findShot(id);
+    if (!source) return;
+    try {
+      const payload = await api(`/api/shots/${id}/duplicate`, { method: "POST", body: {} });
+      await loadShots();
+      selectShot(payload.shot.id);
+      setStatusLine(`${source.slug} duplicated as ${payload.shot.slug}.`, "success");
+    } catch (error) {
+      setStatusLine(error.message || "Could not duplicate the shot.", "error");
     }
   }
 
@@ -617,10 +637,13 @@
     });
   }
 
-  function pickFrame(shotId) {
+  let framePickField = "first_frame";   // Task 20: which frame the picker is filling
+
+  function pickFrame(shotId, field = "first_frame") {
     stripPickShotId = String(shotId);
+    framePickField = field === "last_frame" ? "last_frame" : "first_frame";
     if (typeof window.openLovedPicker === "function") {
-      window.openLovedPicker("shot-frame");
+      window.openLovedPicker(framePickField === "last_frame" ? "shot-last-frame" : "shot-frame");
     } else {
       setStatusLine("The reference picker is not available on this page.", "error");
     }
@@ -628,28 +651,66 @@
 
   function onFramePicked(url, item) {
     const shotId = stripPickShotId || selectedId;
+    const field = framePickField;
     stripPickShotId = "";
+    framePickField = "first_frame";
     if (!shotId || !url) return;
-    setFirstFrame(shotId, url);
+    setShotFrame(shotId, field, url);
   }
 
-  async function setFirstFrame(shotId, url) {
+  function setFirstFrame(shotId, url) { return setShotFrame(shotId, "first_frame", url); }
+
+  async function setShotFrame(shotId, field, url) {
     const shot = findShot(shotId);
     if (!shot) return;
-    // Picking from the card is a hand edit too: first_frame gets locked like any other field.
+    const key = field === "last_frame" ? "last_frame" : "first_frame";
+    // Picking from the card is a hand edit too: the frame field gets locked like any other field.
     const locked = Array.isArray(shot.locked_fields) ? shot.locked_fields.slice() : [];
-    if (url && !locked.includes("first_frame")) locked.push("first_frame");
+    if (url && !locked.includes(key)) locked.push(key);
     try {
-      const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { first_frame: url || "", locked_fields: locked } });
+      const payload = await api(`/api/shots/${shotId}`, { method: "PATCH", body: { [key]: url || "", locked_fields: locked } });
       const index = shots.findIndex((item) => item.id === payload.shot.id);
       if (index >= 0) shots[index] = payload.shot;
       invalidateRenderPlan(payload.shot.id);
       renderList();
-      if (String(selectedId) === String(shotId)) renderEditor();
-      flashSaved(url ? "Frame set" : "Frame cleared");
+      if (String(selectedId) === String(shotId)) { renderEditor(); renderShotSettingsPanel(); }
+      flashSaved(url ? (key === "last_frame" ? "Last frame set" : "Frame set") : "Frame cleared");
     } catch (error) {
       setStatusLine(error.message || "Could not set the frame.", "error");
     }
+  }
+
+  function bindFrameFields(shot) {
+    const host = $("dsShotEditor");
+    if (!host) return;
+    host.querySelectorAll("[data-frame-pick]").forEach((button) => button.addEventListener("click", () => pickFrame(shot.id, button.dataset.framePick)));
+    host.querySelectorAll("[data-frame-clear]").forEach((button) => button.addEventListener("click", () => setShotFrame(shot.id, button.dataset.frameClear, "")));
+    host.querySelectorAll(".ds-frame-field").forEach((zone) => {
+      const field = zone.dataset.frameField;
+      zone.addEventListener("dragover", (event) => {
+        const types = Array.from(event.dataTransfer?.types || []);
+        if (types.includes("text/uri-list") || types.includes("text/plain") || types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; zone.classList.add("is-drop"); }
+      });
+      zone.addEventListener("dragleave", () => zone.classList.remove("is-drop"));
+      zone.addEventListener("drop", async (event) => {
+        zone.classList.remove("is-drop");
+        const file = event.dataTransfer?.files && event.dataTransfer.files[0];
+        if (file && file.type && file.type.startsWith("image/")) {
+          // a file from disk lands in the reference archive first, like a dropped reference
+          event.preventDefault(); event.stopPropagation();
+          try {
+            const data = await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",")[1] || ""); r.onerror = reject; r.readAsDataURL(file); });
+            const payload = await api("/api/reference-archive/upload", { method: "POST", body: { data, mime_type: file.type || "image/png", name: file.name } });
+            setShotFrame(shot.id, field, payload.url);
+          } catch (error) { setStatusLine(`${file.name}: ${error.message || "upload failed"}`, "error"); }
+          return;
+        }
+        const url = urlFromDataTransfer(event.dataTransfer);
+        if (!url) return;
+        event.preventDefault(); event.stopPropagation();
+        setShotFrame(shot.id, field, url);
+      });
+    });
   }
 
   function watchPromptMode() {
@@ -680,8 +741,8 @@
     ["Camera", "Say how it is shot: size, angle, movement, lens."],
     ["Elements", "Attach the talent in the shot and give each one a role."],
     ["Assets", "Attach anything else it references: plates, garments, props, style."],
-    ["Prompt", "Write the text the model receives."],
-    ["Generation", "Pick a first frame, choose the engine, and chain from the previous shot if it continues it."],
+    ["Prompt", "Write the dialogue, then the text the model receives (or have the compiler write it from everything above)."],
+    ["Generation", "Pick a first frame (and a last frame if the engine takes one), choose the engine, and chain from the previous shot if it continues it."],
     ["Takes", "Render, compare the takes, approve the keeper."],
   ];
 
@@ -716,6 +777,8 @@
     if (group.key === "generation") {
       const frameDrops = planDrops(shot, "start_frame");
       if (frameDrops.length && (shot.first_frame || shot.chain_from_previous)) return problemBadge("first frame not sent", frameDrops.map((d) => d.why).join("; "));
+      const endDrops = planDrops(shot, "end_frame");
+      if (endDrops.length && shot.last_frame) return problemBadge("last frame not sent", endDrops.map((d) => d.why).join("; "));
     }
     if (group.takes) {
       const live = shot.takes && shot.takes.rendering;
@@ -779,6 +842,8 @@
       if (hint && filled) hint.remove();
       if (!hint && !filled && !group.list && !group.takes && group.hint) summary?.insertAdjacentHTML("afterend", `<div class="ds-section-hint">${esc(group.hint)}</div>`);
     });
+    const reads = $("dsCompileReads");
+    if (reads) reads.outerHTML = compilerReadsMarkup(shot);
   }
 
   function guideMarkup() {
@@ -833,6 +898,17 @@
       }).join("");
       const unknown = current && !(videoModels && videoModels[current]) ? `<option value="${esc(current)}" selected>${esc(current)} (unknown)</option>` : "";
       control = `<select class="ds-field-input" data-field="${field.key}"><option value="" ${current ? "" : "selected"}>Generator's current video model</option>${unknown}${options}</select>`;
+    } else if (field.type === "frame") {
+      // Task 20: a frame is picked or dropped, not typed. Same reference picker as everywhere else.
+      const url = frameUrl({ first_frame: value });
+      control = `<div class="ds-frame-field ds-dropzone" data-frame-field="${field.key}" data-pick-target="${field.pickTarget}">
+        ${url ? `<img class="ds-frame-thumb" src="${esc(url)}" alt="" draggable="false" title="${esc(value)}">` : `<span class="ds-frame-empty">No ${field.key === "last_frame" ? "last" : "first"} frame. Pick one, or drop an image here.</span>`}
+        <span class="ds-frame-actions">
+          <button type="button" class="ds-card-btn" data-frame-pick="${field.key}">${url ? "Replace" : "Pick"}</button>
+          ${url ? `<button type="button" class="ds-card-btn" data-frame-clear="${field.key}">Clear</button>` : ""}
+        </span>
+        ${url ? `<span class="ds-frame-name" title="${esc(value)}">${esc(String(value).split("/").pop())}</span>` : ""}
+      </div>`;
     } else if (field.type === "select") {
       const blank = field.options.includes(value) ? "" : `<option value="" selected>${field.key === "exposure_class" ? "(old naming \u2014 no class)" : ""}</option>`;
       control = `<select class="ds-field-input" data-field="${field.key}">${blank}${field.options.map((option) => `<option value="${esc(option)}" ${option === value ? "selected" : ""}>${esc(STATUS_LABELS[option] || option)}</option>`).join("")}</select>`;
@@ -850,6 +926,25 @@
       ${field.type === "checkbox" ? lock : ""}
       ${compile}
     </div>`;
+  }
+
+  // Task 20: what the compiler will read, said before it runs. An empty dialogue is the mistake this catches.
+  function compilerReads(shot) {
+    const scene = sceneOf(shot);
+    const refs = (shot.elements || []).length + (shot.reference_assets || []).length + ((shot.style_id && shot.style_enabled && shot.style && (shot.style.images || []).length) || 0);
+    const items = [];
+    items.push(hasText(shot.dialogue) ? { text: `dialogue (${String(shot.dialogue).trim().length} chars)`, ok: true } : { text: "No dialogue on this shot", ok: false });
+    items.push(hasText(shot.action_text) ? { text: "action", ok: true } : { text: "no action text", ok: false });
+    items.push(scene ? { text: `scene ${scene.slug}${hasText(scene.brief) ? " brief" : ""}${hasText(scene.script) ? " + script" : ""}`, ok: true } : { text: "no scene", ok: false });
+    const cam = ["shot_size", "angle", "lens", "aperture", "speed_ramp"].filter((k) => hasText(shot[k])).length + ((shot.movement || []).length ? 1 : 0);
+    items.push(cam ? { text: `camera (${cam} field${cam === 1 ? "" : "s"})`, ok: true } : { text: "no camera fields", ok: false });
+    items.push(refs ? { text: `${refs} reference${refs === 1 ? "" : "s"} numbered Image 1\u2013${refs}`, ok: true } : { text: "no references", ok: false });
+    items.push(project && hasText(project.playbook) ? { text: "playbook", ok: true } : { text: "no playbook", ok: false });
+    return items;
+  }
+  function compilerReadsMarkup(shot) {
+    const items = compilerReads(shot);
+    return `<div class="ds-compile-reads" id="dsCompileReads"><span class="ds-compile-reads-label">Compiler reads:</span> ${items.map((item) => `<span class="ds-compile-read${item.ok ? "" : " is-missing"}">${esc(item.text)}</span>`).join('<span class="ds-compile-reads-sep">\u00b7</span>')}</div>`;
   }
 
   function renderEditor() {
@@ -872,6 +967,7 @@
       <details class="ds-section${group.list ? " ds-section-list" : ""}${filled ? " has-content" : " is-empty"}${group.takes && shot.takes && shot.takes.rendering ? " is-live" : ""}" data-section="${group.key}" ${isSectionOpen(group.key) || (group.takes && shot.takes && shot.takes.rendering) ? "open" : ""}>
         <summary>${group.step ? `<span class="ds-step">${group.step}</span>` : ""}${esc(group.label)}${sectionStateMarkup(shot, group)}</summary>
         ${hint}
+        ${group.key === "prompt" ? compilerReadsMarkup(shot) : ""}
         ${group.list ? renderAttachmentList(shot, group) : (group.takes ? renderTakesSection(shot) : (group.style ? renderStyleSection(shot) : `<div class="ds-section-grid">${group.fields.map((field) => renderField(shot, field)).join("")}</div>`))}
       </details>`;
     }).join("");
@@ -889,6 +985,7 @@
           ${sceneOf(shot) ? `<button type="button" class="ds-shot-mini" id="dsOpenShotScene" title="Open this scene">Open</button>` : ""}
         </span>
         <span class="ds-editor-saved" id="dsEditorSaved"></span>
+        <button type="button" class="ds-shot-mini" id="dsDuplicateShot" title="Duplicate this shot: same content, camera, attachments, prompts, frames, engine and settings; a new ID, no takes">\u2398 Duplicate</button>
         ${readinessMarkup(shot)}
       </div>
       ${guideMarkup()}
@@ -904,6 +1001,8 @@
     });
     bindAttachmentLists(shot);
     bindStyleSection(shot);
+    bindFrameFields(shot);
+    $("dsDuplicateShot")?.addEventListener("click", () => duplicateShot(shot.id));
     host.querySelectorAll("[data-compile]").forEach((button) => button.addEventListener("click", () => compileField(shot.id, button.dataset.compile)));
     ensureStyles().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
     ensureElementCatalog().then((changed) => { if (changed && findShot(selectedId) === shot) renderEditor(); });
@@ -1299,8 +1398,12 @@
       if (section.field) {
         const value = scene[section.field] || "";
         filled = hasText(value);
+        // Task 20: brief and script take a .md / .txt file too, like the project playbook
+        const upload = (section.field === "brief" || section.field === "script")
+          ? `<label class="ds-shot-mini ds-upload-btn" title="Load a .md or .txt file into the ${esc(section.label.toLowerCase())} (replaces the text)">\u2191 Upload .md / .txt<input type="file" accept=".md,.txt,text/markdown,text/plain" data-scene-upload="${section.field}" style="display:none"></label>`
+          : "";
         body = `<div class="ds-field ds-field-wide${lockedOf(section.field) ? " is-locked" : ""}" data-scene-wrap="${section.field}">
-          <div class="ds-field-label"><span>${esc(section.label)}</span>${sceneLockMarkup(scene, section.field)}</div>
+          <div class="ds-field-label"><span>${esc(section.label)}</span>${upload}${sceneLockMarkup(scene, section.field)}</div>
           <textarea class="ds-field-input${section.script ? " ds-script" : ""}" data-scene-field="${section.field}" rows="${section.rows}" placeholder="${esc(section.hint)}">${esc(value)}</textarea>
         </div>`;
       } else if (section.environment) {
@@ -1341,6 +1444,21 @@
     host.querySelectorAll("details.ds-section").forEach((details) => details.addEventListener("toggle", () => setSectionOpen(details.dataset.section, details.open)));
     host.querySelectorAll("[data-scene-field]").forEach((input) => input.addEventListener("change", () => saveSceneField(scene.id, input.dataset.sceneField, input.value)));
     host.querySelectorAll("[data-scene-lock]").forEach((button) => button.addEventListener("click", () => toggleSceneLock(scene.id, button.dataset.sceneLock)));
+    host.querySelectorAll("[data-scene-upload]").forEach((input) => input.addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      const field = input.dataset.sceneUpload;
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const text = String(reader.result || "");
+        await saveSceneField(scene.id, field, text);
+        const area = host.querySelector(`[data-scene-field="${field}"]`);
+        if (area) area.value = text;
+        setSceneStatus(`${file.name} loaded into the ${field} \u00b7 ${text.length} characters.`, "success");
+      };
+      reader.readAsText(file);
+      event.target.value = "";
+    }));
     $("dsSceneAddShot")?.addEventListener("click", () => createShot({ scene_id: scene.id, after_id: lastShotIdInScene(scene.id) }));
     bindCastSection(scene);
     if (!castCache[String(scene.id)]) loadCast(scene.id);
@@ -1599,7 +1717,7 @@
       : `<input class="ds-field-input" data-shot-setting="duration_seconds" type="number" step="0.5" min="0" value="${esc(durationValue)}" placeholder="seconds">`;
     const summary = [];
     summary.push(`${(shot.elements || []).length} element(s), ${(shot.reference_assets || []).length} reference(s)${shot.style_id && shot.style_enabled ? ", style on" : ""}`);
-    summary.push(shot.first_frame ? "first frame set" : "no first frame");
+    summary.push(shot.first_frame ? (shot.last_frame ? "first + last frame set" : "first frame set") : (shot.last_frame ? "last frame set, no first frame" : "no first frame"));
     if (info) summary.push(`model takes: ${modes.join(" / ") || "text"}${info.max_reference_images ? ` \u00b7 up to ${info.max_reference_images} reference images` : ""}`);
     // Task 19: the plan decides whether this reads as a status or a blocker
     ensureRenderPlan(shot.id);
@@ -1623,7 +1741,8 @@
       <div class="ctrl-group"><div class="ctrl-label">Duration</div>${durationControl}</div>
       ${resolutions.length ? `<div class="ctrl-group"><div class="ctrl-label">Resolution</div><select class="ds-field-input" data-shot-setting="resolution"><option value="">Model default (${esc(String(resolutions[0]))})</option>${resolutions.map((r) => `<option value="${esc(String(r))}" ${String(r) === String(shot.resolution || "") ? "selected" : ""}>${esc(String(r))}</option>`).join("")}</select></div>` : ""}
       ${info && info.supports_aspect_ratio === false ? "" : `<div class="ctrl-group"><div class="ctrl-label">Aspect ratio</div><select class="ds-field-input" data-shot-setting="aspect_ratio"><option value="">Project default${project.settings && project.settings.aspect_ratio ? ` (${esc(project.settings.aspect_ratio)})` : ""}</option>${aspects.map((a) => `<option value="${esc(String(a))}" ${String(a) === String(shot.aspect_ratio || "") ? "selected" : ""}>${esc(String(a))}</option>`).join("")}</select></div>`}
-      ${supportsAudio ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="generate_audio" ${shot.generate_audio ? "checked" : ""}> <span>Generate audio</span></label></div>` : (info ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><div class="ref-note">${esc(info.label || engine)} does not generate audio.</div></div>` : "")}
+      ${supportsAudio ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="generate_audio" ${shot.generate_audio ? "checked" : ""}> <span>Generate audio</span></label>${info && info.generate_audio_field === "audio" ? `<div class="ref-note">Off by default here: this project renders silent and syncs audio afterwards.</div>` : ""}</div>` : (info ? `<div class="ctrl-group"><div class="ctrl-label">Audio</div><div class="ref-note">${esc(info.label || engine)} does not generate audio.</div></div>` : "")}
+      ${info && info.supports_thinking ? `<div class="ctrl-group"><div class="ctrl-label">Thinking</div><label class="ds-field-check"><input type="checkbox" data-shot-setting="enable_thinking" ${shot.enable_thinking === false ? "" : "checked"}> <span>Enable thinking (reasoning pass before generation)</span></label><div class="ref-note">On by default: multi-subject prompts need it. Adds latency.</div></div>` : ""}
       ${modeControl}
       ${seedControl}
       ${cfgControl}
@@ -1679,7 +1798,10 @@
       status.textContent = "Locked. Unlock the field to compile into it."; status.className = "ds-compile-status error"; return;
     }
     if (button) { button.disabled = true; button.textContent = "Compiling\u2026"; }
-    status.textContent = "Assembling the playbook, scene, cast, references and camera\u2026"; status.className = "ds-compile-status";
+    const reads = compilerReads(shot);
+    const missing = reads.filter((item) => !item.ok).map((item) => item.text);
+    status.textContent = `Compiling from ${reads.filter((item) => item.ok).map((item) => item.text).join(", ") || "nothing"}${missing.length ? ` \u00b7 ${missing.join(", ")}` : ""}\u2026`;
+    status.className = "ds-compile-status" + (missing.length ? " is-partial" : "");
     try {
       const payload = await api(`/api/shots/${shotId}/compile`, { method: "POST", body: { field } });
       compileProposals[`${shotId}:${field}`] = payload;
@@ -1775,11 +1897,13 @@
               ? `<img src="${esc(take.poster_path)}" alt="Take ${take.id}" draggable="false">`
               : `<video src="${esc(take.asset_path)}#t=0.1" muted playsinline preload="metadata" controls></video>`);
       const engineLabel = videoModels && videoModels[take.engine] ? videoModels[take.engine].label : take.engine;
-      return `<div class="ds-take${take.approved ? " is-approved" : ""}${failed ? " is-failed" : ""}" data-take="${take.id}">
-        <div class="ds-take-thumb">${thumb}${take.approved ? `<span class="ds-card-approved" title="Approved">\u2713</span>` : ""}</div>
+      const importedNote = take.imported ? `<div class="ds-take-imported" title="Added from the gallery${take.imported_from ? ": " + esc(take.imported_from) : ""}. Not rendered from this row: no prompt sent, no references and no engine of record on the shot.">imported \u00b7 not from this shot's prompt, references or engine</div>` : "";
+      return `<div class="ds-take${take.approved ? " is-approved" : ""}${failed ? " is-failed" : ""}${take.imported ? " is-imported" : ""}" data-take="${take.id}">
+        <div class="ds-take-thumb">${thumb}${take.approved ? `<span class="ds-card-approved" title="Approved">\u2713</span>` : ""}${take.imported ? `<span class="ds-take-import-tag" title="Imported from the gallery">imported</span>` : ""}</div>
+        ${importedNote}
         <div class="ds-take-meta">
           <span class="ds-take-cost${take.cost_status === "unknown" ? " is-unknown" : ""}" title="${take.cost_status === "unknown" ? "No published rate for this engine in the studio table" : (take.cost_status === "known" ? "From the published per-second rate" : "")}">${take.cost_status === "unknown" ? "cost unknown" : "$" + Number(take.cost || 0).toFixed(2)}</span>
-          <span class="ds-take-engine" title="${esc(take.engine)}">${esc(engineLabel || "\u2014")}</span>
+          <span class="ds-take-engine" title="${esc(take.engine)}">${esc(take.imported ? (engineLabel ? `${engineLabel} (from the file)` : "engine unknown") : (engineLabel || "\u2014"))}</span>
           <span class="ds-take-time">${esc(formatTakeTime(take.completed_at || take.created_at))}</span>
         </div>
         ${take.asset_path ? `<div class="ds-take-file" title="${esc(take.asset_path)}">${esc(String(take.asset_path).split("/").pop())}</div>` : ""}
@@ -2290,7 +2414,45 @@
     onScopeChange(null);
   }
 
-  window.directorShots = { reload: loadShots, select: selectShot, selectScene, onFramePicked, setFirstFrame, onElementsPicked, onReferencesPicked, onCastElementPicked, renderShot };
+  // ---- Task 20: a gallery render becomes an imported take on a shot ----
+  function canImportTakes() { return isFilm() && shots.length > 0; }
+
+  function openImportChooser(entry, anchor, onDone) {
+    const url = String((entry && entry.video && entry.video.url) || "").trim();
+    if (!url || !canImportTakes()) return;
+    document.querySelectorAll(".ds-import-menu").forEach((menu) => menu.remove());
+    const menu = document.createElement("div");
+    menu.className = "ds-import-menu";
+    const groups = scenes.map((scene) => ({ scene, items: shots.filter((shot) => String(shot.scene_id || "") === String(scene.id)) })).filter((g) => g.items.length);
+    const unassigned = shots.filter((shot) => !shot.scene_id || !findScene(shot.scene_id));
+    const rows = (items) => items.map((shot) => `<button type="button" class="ds-import-option${String(shot.id) === String(selectedId) ? " is-current" : ""}" data-shot="${shot.id}"><span class="ds-shot-slug">${esc(shot.slug)}</span>${shot.takes && shot.takes.count ? `<span class="ds-shot-count">${shot.takes.count}</span>` : ""}</button>`).join("");
+    menu.innerHTML = `<div class="ds-import-title">Add to shot as a take</div><div class="ds-import-sub">${esc(url.split("/").pop())}</div>`
+      + groups.map((g) => `<div class="ds-import-group">${esc(g.scene.slug)}</div>${rows(g.items)}`).join("")
+      + (unassigned.length ? `<div class="ds-import-group">Unassigned</div>${rows(unassigned)}` : "");
+    menu.addEventListener("click", async (event) => {
+      const option = event.target.closest("[data-shot]");
+      if (!option) return;
+      event.stopPropagation();
+      const shotId = option.dataset.shot;
+      menu.remove();
+      try {
+        const payload = await api(`/api/shots/${shotId}/takes/import`, { method: "POST", body: { asset_url: url } });
+        delete takesCache[String(shotId)];
+        await loadShots();
+        if (String(selectedId) === String(shotId)) renderEditor();
+        setStatusLine(`Added to ${payload.shot.slug} as an imported take.`, "success");
+        if (typeof window.showError === "function") window.showError(`Added to ${payload.shot.slug} as an imported take. The file now lives under the shot.`, "success");
+        if (typeof onDone === "function") onDone(payload);
+      } catch (error) {
+        if (typeof window.showError === "function") window.showError(error.message || "Could not add the render to the shot.");
+        setStatusLine(error.message || "Could not add the render to the shot.", "error");
+      }
+    });
+    (anchor && anchor.closest(".img-card, .video-feature-shell") || document.body).appendChild(menu);
+    window.setTimeout(() => document.addEventListener("pointerdown", (event) => { if (!event.target.closest(".ds-import-menu")) menu.remove(); }, { once: true }), 0);
+  }
+
+  window.directorShots = { reload: loadShots, select: selectShot, selectScene, onFramePicked, setFirstFrame, setShotFrame, onElementsPicked, onReferencesPicked, onCastElementPicked, renderShot, duplicateShot, canImportTakes, openImportChooser };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });

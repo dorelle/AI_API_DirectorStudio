@@ -8,7 +8,7 @@
 <script>(function(){if(localStorage.getItem('nb-theme')==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 <script>window.__ASSET_META_BOOTSTRAP__ = {{ asset_meta_bootstrap | tojson }};</script>
   <script defer src="/static/project_meta.js?v=20260919d"></script>
-  <script defer src="/static/director_shots.js?v=20260920c"></script>
+  <script defer src="/static/director_shots.js?v=20260921a"></script>
 <script>
 (function () {
   const PROMPT_BAR_HEIGHT_DEFAULT = 320;
@@ -428,7 +428,7 @@
   window.addEventListener('resize', syncHistorySidebarCompactMode);
 })();
 </script>
-<link rel="stylesheet" href="/static/style.css?v=20260919b">
+<link rel="stylesheet" href="/static/style.css?v=20260921a">
 </head>
 <body>
 
@@ -3846,11 +3846,54 @@ function loadImageDimensions(src) {
   });
 }
 
+// Task 20: re-encode an attached image for transmission when the field has a byte cap and the image is over it.
+// JPEG quality 0.9, at most 1500px on the long edge (the fix recorded for Kling O3 Pro). The payload is changed
+// in place and loses its url fields, so the server uploads these bytes, not the original file. The original on
+// disk is untouched. Returns the new byte count, or 0 when the browser could not re-encode it.
+const TRANSMIT_RESIZE_MAX_EDGE = 1500;
+const TRANSMIT_RESIZE_QUALITY = 0.9;
+async function shrinkImagePayloadForTransmission(payload, maxBytes) {
+  const src = payload.previewUrl || (payload.data ? `data:${payload.mime_type || "image/png"};base64,${payload.data}` : (payload.url || payload.original_url || ""));
+  if (!src) return 0;
+  const img = await new Promise(resolve => { const el = new Image(); el.onload = () => resolve(el); el.onerror = () => resolve(null); el.src = src; });
+  if (!img || !img.naturalWidth) return 0;
+  const scale = Math.min(1, TRANSMIT_RESIZE_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);   // flatten alpha like the server does
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  let quality = TRANSMIT_RESIZE_QUALITY;
+  let dataUrl = "";
+  let bytes = 0;
+  while (true) {
+    dataUrl = canvas.toDataURL("image/jpeg", quality);
+    bytes = Math.floor((dataUrl.length - dataUrl.indexOf(",") - 1) * 3 / 4);
+    if (bytes <= maxBytes || quality <= 0.6) break;
+    quality = Math.round((quality - 0.05) * 100) / 100;
+  }
+  if (bytes > maxBytes) return 0;
+  if (payload.previewUrl && String(payload.previewUrl).startsWith("blob:")) { try { URL.revokeObjectURL(payload.previewUrl); } catch (e) {} }
+  payload.data = dataUrl.split(",")[1] || "";
+  payload.mime_type = "image/jpeg";
+  payload.name = String(payload.name || "image").replace(/\.[a-z0-9]+$/i, "") + ".jpg";
+  payload.previewUrl = dataUrl;
+  ["url", "original_url", "masked_url", "mask_url", "archive_date", "archive_filename", "original_data", "mask_png_data"].forEach(key => { if (key in payload) payload[key] = ""; });
+  payload.has_mask = false;
+  payload.resized_for_transmission = true;
+  return bytes;
+}
+
 async function validateImageAgainstConstraints(payload, constraints, label) {
   if (!payload || !constraints) return null;
   const bytes = estimateImagePayloadBytes(payload);
   if (constraints.max_file_size && bytes > constraints.max_file_size) {
-    return `${label}: ${(bytes / 1048576).toFixed(1)} MB is over the ${(constraints.max_file_size / 1048576).toFixed(0)} MB limit for this field.`;
+    const shrunk = await shrinkImagePayloadForTransmission(payload, constraints.max_file_size);
+    if (!shrunk) {
+      return `${label}: ${(bytes / 1048576).toFixed(1)} MB is over the ${(constraints.max_file_size / 1048576).toFixed(0)} MB limit for this field and could not be re-encoded in this browser.`;
+    }
+    showError(`${label}: ${(bytes / 1048576).toFixed(1)} MB was over the ${(constraints.max_file_size / 1048576).toFixed(0)} MB limit; sending a ${(shrunk / 1048576).toFixed(1)} MB JPEG copy (max ${TRANSMIT_RESIZE_MAX_EDGE}px). The original file is unchanged.`, "success");
   }
   const src = payload.previewUrl || (payload.data ? `data:${payload.mime_type || "image/png"};base64,${payload.data}` : (payload.url || ""));
   const dims = await loadImageDimensions(src);
@@ -3886,11 +3929,13 @@ function validateVideoSlotImageAsync(slot) {
     const target = videoSourceImage;
     validateImageAgainstConstraints(target, getVideoImageConstraints(info.start_image_field, selection), "Start frame").then(err => {
       if (err && videoSourceImage === target) { showError(err); setVideoSourceImage(null); }
+      else if (target.resized_for_transmission && videoSourceImage === target) setVideoSourceImage(target);
     });
   } else if (slot === "end" && videoEndImage) {
     const target = videoEndImage;
     validateImageAgainstConstraints(target, getVideoImageConstraints(info.end_image_field, selection), "End frame").then(err => {
       if (err && videoEndImage === target) { showError(err); setVideoEndImage(null); }
+      else if (target.resized_for_transmission && videoEndImage === target) setVideoEndImage(target);
     });
   } else if (slot === "ref") {
     const constraints = getVideoImageConstraints(info.reference_images_field, selection);
@@ -3900,6 +3945,7 @@ function validateVideoSlotImageAsync(slot) {
       img.__validated = true;
       validateImageAgainstConstraints(img, constraints, "Reference image").then(err => {
         const idx = videoReferenceImages.indexOf(img);
+        if (!err && img.resized_for_transmission && idx >= 0) { renderVideoReferenceStrip(); scheduleDraftSave(); }
         if (err && idx >= 0) {
           showError(err);
           if (img.previewUrl && img.previewUrl.startsWith("blob:")) URL.revokeObjectURL(img.previewUrl);
@@ -7171,7 +7217,7 @@ async function loadLovedPickerSource(source = pickerSource) {
 
     renderLovedPickerList(
       list,
-      (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame")
+      (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame" || pickerTarget === "shot-last-frame")
         ? 1
         : pickerTarget === "shot-refs"
         ? 99
@@ -7192,17 +7238,18 @@ function syncLovedPickerTargetUi() {
   const isVideoRefs = pickerTarget === "video-refs";
   const isEditGlobalRefs = pickerTarget === "edit-global-refs";
   const isEditSelectionRefs = pickerTarget === "edit-selection-refs";
-  const isShotFrame = pickerTarget === "shot-frame";
+  const isShotLastFrame = pickerTarget === "shot-last-frame";
+  const isShotFrame = pickerTarget === "shot-frame" || isShotLastFrame;
   const isShotRefs = pickerTarget === "shot-refs";
   if (title) {
-    title.textContent = isShotFrame ? "Choose first frame" : (isVideoEnd ? "Choose end frame" : (isVideoSource ? "Choose source image" : "Choose reference images"));
+    title.textContent = isShotLastFrame ? "Choose last frame" : (isShotFrame ? "Choose first frame" : (isVideoEnd ? "Choose end frame" : (isVideoSource ? "Choose source image" : "Choose reference images")));
   }
   if (confirmBtn) {
     confirmBtn.textContent = (isVideoSource || isShotFrame) ? "Use selected" : "Add selected";
   }
   if (limitNote) {
     if (isShotFrame) {
-      limitNote.textContent = "Choose one image as this shot's first frame.";
+      limitNote.textContent = isShotLastFrame ? "Choose one image as this shot's last frame." : "Choose one image as this shot's first frame.";
     } else if (isShotRefs) {
       limitNote.textContent = "Reference images for this shot. Order can be changed in the shot editor.";
     } else if (isVideoEnd) {
@@ -7233,6 +7280,7 @@ async function openLovedPicker(target = "refs") {
     target === "edit-global-refs" ? "edit-global-refs" :
     target === "edit-selection-refs" ? "edit-selection-refs" :
     target === "shot-frame" ? "shot-frame" :
+    target === "shot-last-frame" ? "shot-last-frame" :
     target === "shot-refs" ? "shot-refs" :
     "refs";
   if (pickerTarget === "refs") {
@@ -7259,7 +7307,7 @@ async function switchLovedPickerSource(source) {
 }
 
 function togglePickerCard(card, url, filename, maxRef) {
-  const remaining = (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame")
+  const remaining = (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame" || pickerTarget === "shot-last-frame")
     ? 1
     : pickerTarget === "shot-refs"
     ? 99
@@ -7269,7 +7317,7 @@ function togglePickerCard(card, url, filename, maxRef) {
         ? getEditReferenceStorageLimit()
         : maxRef - refImages.length));
   if (!pickerSelected.has(url) && pickerSelected.size >= remaining) {
-    if (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame") {
+    if (pickerTarget === "video" || pickerTarget === "video-end" || pickerTarget === "shot-frame" || pickerTarget === "shot-last-frame") {
       document.querySelectorAll(".picker-card.selected").forEach(el => el.classList.remove("selected"));
       pickerSelected.clear();
     } else {
@@ -7304,7 +7352,7 @@ async function confirmLovedPicker() {
     }
     return;
   }
-  if (target === "shot-frame") {
+  if (target === "shot-frame" || target === "shot-last-frame") {
     const item = pickerItemsByUrl.get(urls[0]) || {};
     closeLovedPicker();
     if (urls[0] && window.directorShots && typeof window.directorShots.onFramePicked === "function") {
@@ -12504,7 +12552,21 @@ function buildVideoCard(entry, options = {}) {
     void deleteGalleryEntry(entry, { confirm: true });
   };
 
-  actions.append(reuseBtn, dlBtn, infoBtn, folderBtn, delBtn);
+  actions.append(reuseBtn, dlBtn, infoBtn, folderBtn);
+  // Task 20: a one-off render becomes an imported take on a shot (film projects only; local files only)
+  if (window.directorShots && typeof window.directorShots.canImportTakes === "function" && window.directorShots.canImportTakes() && videoUrl.startsWith("/videos/")) {
+    const shotBtn = makeActionBtn(SVG_ADD_TO_SHOT, "Add to shot as a take");
+    shotBtn.onclick = (event) => {
+      event.stopPropagation();
+      window.directorShots.openImportChooser(entry, shotBtn, () => {
+        // the file moved under the shot; this card points at the old path now
+        removeGalleryEntriesByIds([entry.id]);
+        renderGalleryEntries();
+      });
+    };
+    actions.append(shotBtn);
+  }
+  actions.append(delBtn);
 
   const badges = document.createElement("div");
   badges.className = "img-card-badges";
@@ -13611,6 +13673,7 @@ const SVG_INFO        = `<svg width="15" height="15" viewBox="0 0 24 24" fill="n
 const SVG_COMPARE     = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M4 7.5A8.5 8.5 0 0 1 12 3v18a8.5 8.5 0 0 1-8-13.5Z"/><path d="M20 7.5A8.5 8.5 0 0 0 12 3v18a8.5 8.5 0 0 0 8-13.5Z"/></svg>`;
 const SVG_FOLDER_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1"/><path d="M3 11h18"/><path d="M15 13h6"/><path d="m18 10 3 3-3 3"/><path d="M4 20h9a2 2 0 0 0 2-2v-5"/></svg>`;
 const SVG_CHECK       = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+const SVG_ADD_TO_SHOT = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M7 3v4M13 3v4M3 9h14"/><path d="M19 12v6M16 15h6"/></svg>`;
 const SVG_TRASH       = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
 const SVG_X           = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 const SVG_PAN_ZOOM    = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m8 8 3-3 3 3"/><path d="m8 16 3 3 3-3"/><path d="m8 8-3 3 3 3"/><path d="m16 8 3 3-3 3"/></svg>`;
